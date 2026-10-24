@@ -181,9 +181,11 @@ for automation.
 [sashiko](https://github.com/sashiko-dev/sashiko):
 
 1. **Plan**, deterministically: `intent` and `logic` always run; `error_handling` (unchecked return
-   codes, cleanup on error paths, assertions used where runtime checks are needed) runs whenever C
-   code changes; `concurrency`, `resources`, `hardware`, `build_config` and `security` are added
-   from the files and code the change touches (or set `specialists` explicitly).
+   codes, cleanup on error paths, assertions used where runtime checks are needed) and
+   `coding_guidelines` (Zephyr's MISRA C:2012 subset and project rules A.1 to A.5, the ones
+   checkpatch does not cover) run whenever C code changes; `concurrency`, `resources`, `hardware`,
+   `build_config` and `security` are added from the files and code the change touches (or set
+   `specialists` explicitly).
 2. **Specialists**, in parallel, each with the tools, a focused prompt and its own step budget. Each
    returns `concerns` and `dismissed` concerns with evidence; dismissals matter because they stop
    another pass's identical guess from surviving, and weak ones are audited.

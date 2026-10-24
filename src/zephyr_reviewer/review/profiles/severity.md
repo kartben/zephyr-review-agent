@@ -34,6 +34,9 @@ question is whether the defect is real. It is always reported, never dropped.
   documentation that contradicts the code, an edge case with minor consequence.
 - **suggestion**: an optional improvement that is not required for correctness.
 
+A coding-guidelines violation (Zephyr's MISRA C:2012 subset) is low or suggestion unless it is also
+a defect, in which case it takes the defect's severity and category.
+
 Use medium as the default and move from it only with a reason. Do not inflate: critical findings
 must be critical, and a review that cries wolf is ignored. Do not deflate either: a real
 high-severity defect labelled low because it "seems rare" is the worse mistake.

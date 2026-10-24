@@ -37,7 +37,17 @@ from .schema import (
     parse_review,
 )
 
-SPECIALISTS = ["intent", "logic", "error_handling", "concurrency", "resources", "hardware", "build_config", "security"]
+SPECIALISTS = [
+    "intent",
+    "logic",
+    "error_handling",
+    "concurrency",
+    "resources",
+    "hardware",
+    "build_config",
+    "security",
+    "coding_guidelines",
+]
 ALWAYS = ["intent", "logic"]
 
 _CONCURRENCY_HINT = re.compile(
@@ -90,6 +100,8 @@ def plan_specialists(files: list[str], added_text: str) -> list[str]:
         chosen.append("build_config")
     if c_code and (_SECURITY_HINT.search(added_text) or _SECURITY_PATHS.search(paths)):
         chosen.append("security")
+    if c_code:
+        chosen.append("coding_guidelines")  # Zephyr's MISRA C:2012 subset and project rules A.1 to A.5
     return [s for s in SPECIALISTS if s in chosen]
 
 

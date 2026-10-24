@@ -126,7 +126,7 @@ concrete diagnosis, a counterexample, or a fix the thread lacks.
 
 ### Documentation and code quality
 
-Comment on documentation when it contradicts the implementation or when public APIs, Kconfig options, bindings or user-visible behavior are undocumented. Comment on code quality only when it has a meaningful effect on correctness or maintainability. Formatting and style are enforced by project tooling; do not report them.
+Comment on documentation when it contradicts the implementation or when public APIs, Kconfig options, bindings or user-visible behavior are undocumented. Comment on code quality only when it has a meaningful effect on correctness or maintainability. Formatting and style are enforced by project tooling; do not report them. Zephyr's coding guidelines (a required MISRA C:2012 subset plus project rules, `project_guidelines` topic `coding-guidelines`) are not enforced by tooling: report violations on changed lines, grouped per rule, at low severity unless the violation is also a defect.
 
 ## Review process
 

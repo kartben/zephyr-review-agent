@@ -33,9 +33,24 @@ def test_planner_picks_passes_from_the_change():
         "error_handling",
         "concurrency",
         "security",
+        "coding_guidelines",
     ]
-    assert plan_specialists(["arch/arm/core/fault.S"], "") == ["intent", "logic", "error_handling", "concurrency"]
-    assert plan_specialists(["lib/os/clock.c"], "") == ["intent", "logic", "error_handling", "resources", "security"]
+    assert plan_specialists(["arch/arm/core/fault.S"], "") == [
+        "intent",
+        "logic",
+        "error_handling",
+        "concurrency",
+        "coding_guidelines",
+    ]
+    assert plan_specialists(["lib/os/clock.c"], "") == [
+        "intent",
+        "logic",
+        "error_handling",
+        "resources",
+        "security",
+        "coding_guidelines",
+    ]
+    assert plan_specialists(["Kconfig"], "") == ["intent", "logic", "build_config"]  # no C, no guidelines pass
     assert plan_specialists(["drivers/i2c/i2c_foo.c", "drivers/i2c/Kconfig"], "k_sem_take(&l, K_FOREVER);") == [
         "intent",
         "logic",
@@ -44,6 +59,7 @@ def test_planner_picks_passes_from_the_change():
         "resources",
         "hardware",
         "build_config",
+        "coding_guidelines",
     ]
     assert "security" in plan_specialists(["subsys/net/ip/tcp.c"], "memcpy(a, b, n);")
     # Security runs for the attacker-facing areas the sightings came from, and on wire-length idioms anywhere.
@@ -379,6 +395,7 @@ async def test_pipeline_end_to_end(mini_repo):
         "resources",
         "hardware",
         "build_config",
+        "coding_guidelines",
     ]
     # Specialist models vs verification models.
     spec_models = {
@@ -567,3 +584,36 @@ def test_security_stage_prompt_encodes_the_sightings_taxonomy():
 
     assert "Bounds enforced elsewhere" in load_guides() and "strictly more privileged" in load_guides()
     assert guide  # verification prompt still loads
+
+
+def test_coding_guidelines_stage_prompt_covers_the_misra_subset_and_project_rules():
+    from zephyr_reviewer.review.pipeline import _stage_prompt
+    from zephyr_reviewer.review.schema import CATEGORIES
+
+    text = _stage_prompt("coding_guidelines")
+    assert text.startswith("# Stage: coding guidelines")
+    for must in (
+        "MISRA C:2012",
+        "checkpatch",
+        "U` suffix",
+        "1 << 31",
+        "if (ptr != NULL)",
+        "else if",
+        "default",
+        "__fallthrough",
+        "ARG_UNUSED",
+        "#if defined(CONFIG_X)",
+        "include guards",
+        "atoi",
+        "memcmp",
+        "A.1 Conditional compilation",
+        "A.2 Inclusive language",
+        "A.3 Macro name collisions",
+        "A.4 libc in the kernel",
+        "A.5 libc in the codebase",
+        "strtok_r",
+        "`low` or `suggestion`",
+        "Group violations of the same rule",
+    ):
+        assert must in text, must
+    assert "coding_guidelines" in CATEGORIES

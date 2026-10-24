@@ -24,6 +24,7 @@ CATEGORIES = [
     "documentation",
     "commit_message",
     "maintainability",
+    "coding_guidelines",
 ]
 VERDICTS = ["approve", "comment", "request_changes"]
 PRIORITIES = ["must", "should", "optional"]
