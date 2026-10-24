@@ -190,8 +190,18 @@ def test_cost_and_models_stay_out_of_summary_and_log_unless_asked(
     assert "$0." not in err and "via OpenRouter" not in err
     assert "review finished:" in err and "step(s)" in err
 
+    # --show-details is for the terminal: the log gets the details, the comment and summary still do not.
     summary.write_text("")
     assert cli.main([*base, "--output-dir", str(tmp_path / "b"), "--show-details"]) == 0
+    out, err = capsys.readouterr()
+    text = summary.read_text()
+    assert "via OpenRouter" in err and "$0.0" in err and "stub/model" in err
+    for leak in ("$0.", "via OpenRouter"):
+        assert leak not in text and leak not in out
+
+    # --post-details is the only switch that lets them reach the comment and the job summary.
+    summary.write_text("")
+    assert cli.main([*base, "--output-dir", str(tmp_path / "c"), "--post-details"]) == 0
     out, err = capsys.readouterr()
     text = summary.read_text()
     assert "via OpenRouter" in text and "$0.0" in text and "stub/model" in text

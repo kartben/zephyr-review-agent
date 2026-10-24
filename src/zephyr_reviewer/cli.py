@@ -83,7 +83,14 @@ def _add_review_args(p: argparse.ArgumentParser) -> None:
         help="Ignore existing reviews and comments on the PR so they cannot influence the review (testing)",
     )
     p.add_argument(
-        "--show-details", action="store_true", help="Append models, steps, tokens, cost and time to the posted comment"
+        "--show-details",
+        action="store_true",
+        help="Log models, steps, tokens, cost and time locally (testing); nothing is posted or put in the job summary",
+    )
+    p.add_argument(
+        "--post-details",
+        action="store_true",
+        help="Append models, steps, tokens, cost and time to the posted comment and the job summary too",
     )
     p.add_argument(
         "--show-refuted",
@@ -153,6 +160,8 @@ def _config(args: argparse.Namespace) -> ReviewConfig:
         cfg.include_discussion = False
     if args.show_details:
         cfg.show_run_details = True
+    if args.post_details:
+        cfg.post_run_details = True
     if args.show_refuted:
         cfg.show_refuted_candidates = True
     if args.in_process:
@@ -475,7 +484,7 @@ def cmd_review(args: argparse.Namespace) -> int:
                 repo=cfg.repo_slug,
                 tag=cfg.comment_tag,
                 api_url=cfg.github_api_url,
-                details=cfg.show_run_details,
+                details=cfg.post_run_details,
                 exclude_inline=exclude_inline,
                 refuted=cfg.show_refuted_candidates,
             )
@@ -495,10 +504,11 @@ def cmd_review(args: argparse.Namespace) -> int:
     confirm = _interactive_confirm(cfg.output_dir, pr) if cfg.publish == "ask" and _has_terminal() else None
     outputs = pub.publish(cfg, gh, pr, run, render, log=log, confirm=confirm)
     pub.write_outputs(outputs)
-    # Models, tokens and cost appear nowhere, not even the job summary or log, unless show_run_details is set;
-    # review.json keeps them for whoever opens the artifact.
-    pub.write_summary(body + ("\n\n" + run_details(run, pr) if cfg.show_run_details else ""))
-    log(run_details(run, pr) if cfg.show_run_details else run_progress(run))
+    # Models, tokens and cost appear nowhere by default; review.json keeps them for whoever opens the artifact.
+    # show_run_details puts them in the local log for testing; only post_run_details lets them reach GitHub
+    # (the comment and the job summary).
+    pub.write_summary(body + ("\n\n" + run_details(run, pr) if cfg.post_run_details else ""))
+    log(run_details(run, pr) if cfg.show_run_details or cfg.post_run_details else run_progress(run))
     if outputs.get("posted") != "true" and confirm is None:
         print(body)
         if inline:

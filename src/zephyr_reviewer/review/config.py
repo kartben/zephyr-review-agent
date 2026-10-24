@@ -82,7 +82,8 @@ class ReviewConfig:
     post_comment: bool = True
     post_inline: bool = True
     comment_tag: str = "zephyr-reviewer"
-    show_run_details: bool = False
+    show_run_details: bool = False  # models, tokens, cost and time in the local log only
+    post_run_details: bool = False  # ... and in the posted comment and job summary
     show_refuted_candidates: bool = False
     fail_on_severity: str = "none"
     publish: str = "post"  # post | ask | never
@@ -149,6 +150,7 @@ class ReviewConfig:
         cfg.post_inline = _bool(_env("post_inline_comments"), True)
         cfg.comment_tag = _env("comment_tag", cfg.comment_tag)
         cfg.show_run_details = _bool(_env("show_run_details"), False)
+        cfg.post_run_details = _bool(_env("post_run_details"), False)
         cfg.show_refuted_candidates = _bool(_env("show_refuted_candidates"), False)
         cfg.fail_on_severity = _env("fail_on_severity", "none").strip().lower() or "none"
         cfg.publish = _env("publish", "post").strip().lower() or "post"

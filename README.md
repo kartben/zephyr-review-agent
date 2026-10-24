@@ -309,8 +309,10 @@ model reads. The remaining tools return text; they gain schemas as consumers app
 
 The posted comment ends with the one-line advisory notice and nothing else. Models, tokens and cost
 appear nowhere by default, not in the comment, the job summary or the log; only `review.json` in the
-artifacts records them. Set `show_run_details: "true"` (or `--show-details`) to include them in all
-three.
+artifacts records them. `--show-details` (`show_run_details: "true"`) prints them in the local log
+for testing and debugging without changing what is posted. `--post-details`
+(`post_run_details: "true"`) is the separate switch that appends them to the posted comment and the
+job summary.
 
 ### False-positive guide and severity calibration
 
