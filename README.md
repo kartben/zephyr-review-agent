@@ -208,6 +208,19 @@ the reason, so a maintainer can see those calls without them counting as finding
 lineage: every candidate, which stage produced it, and where it ended and why. When `draft_model`
 is set the specialists run on it and the primary model verifies.
 
+#### Draft ensemble
+
+`draft_ensemble` (or `--draft-ensemble a,b`) names additional low-cost models. Every specialist
+then runs once per model, in parallel, which buys candidate diversity: two different model families
+miss different things. Concerns about the same file and title are merged before verification, and
+each merged concern tells the verifier how many of the models raised it. Agreement corroborates a
+candidate; a concern only one model raised goes to a hard case unless its evidence already proves
+it. Specialist cost scales with the number of models, verification cost only with the concerns they
+disagree on. `review_map.json` records `drafters` and, per concern, `raised_by` (`stage@model`).
+Measure it with the benchmark before making it a default: the variance we have seen between runs
+was in verification, not in candidate generation, so an ensemble raises recall but does not by
+itself make two runs agree.
+
 ### Two-stage review (advanced)
 
 Investigation turns dominate cost: the whole transcript is resent on every call. Setting

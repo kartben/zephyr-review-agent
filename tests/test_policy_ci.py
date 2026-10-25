@@ -226,3 +226,16 @@ def test_opening_message_frames_untrusted_text():
     assert "ignore your instructions" not in text and "​" not in text
     assert "### CI\nCI on head: 1 failure." in text
     assert "<pr_discussion>\ndigest text\n</pr_discussion>" in text
+
+
+def test_draft_ensemble_is_read_from_the_environment_and_selects_multi_stage(monkeypatch):
+    monkeypatch.setenv("INPUT_DRAFT_MODEL", "cheap/a")
+    monkeypatch.setenv("INPUT_DRAFT_ENSEMBLE", "cheap/a, cheap/b ,other/c")
+    cfg = ReviewConfig.from_env()
+    assert cfg.draft_models == ["cheap/a"] and cfg.draft_ensemble == [
+        "cheap/b",
+        "other/c",
+    ]  # the drafter is not repeated
+    assert cfg.effective_pipeline() == "multi-stage"
+    monkeypatch.setenv("INPUT_PIPELINE", "two-stage")
+    assert ReviewConfig.from_env().effective_pipeline() == "two-stage"  # explicit wins; the CLI logs that it is ignored

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import httpx
 
@@ -15,10 +16,14 @@ from zephyr_reviewer.mcp_server import build_server
 from zephyr_reviewer.review.github_api import PullRequest
 from zephyr_reviewer.review.mcp_client import ToolBridge
 from zephyr_reviewer.review.pipeline import (
+    Concern,
+    agreement_line,
     hunk_text,
     make_verification_parser,
+    merge_concern,
     plan_specialists,
     run_pipeline,
+    verification_message,
 )
 from zephyr_reviewer.review.prompts import load_profile, opening_message, system_prompt
 from zephyr_reviewer.review.schema import parse_review
@@ -617,3 +622,114 @@ def test_coding_guidelines_stage_prompt_covers_the_misra_subset_and_project_rule
     ):
         assert must in text, must
     assert "coding_guidelines" in CATEGORIES
+
+
+def test_concerns_with_the_same_file_and_title_merge_and_count_their_drafters():
+    concerns: list[Concern] = []
+    a = merge_concern(
+        concerns, _finding("Early return leaks the bus lock", file="a.c", line=3, evidence="e1"), "logic@m1"
+    )
+    b = merge_concern(
+        concerns, _finding("early return leaks the bus lock!", file="a.c", line=9, evidence="e2"), "concurrency@m2"
+    )
+    c = merge_concern(concerns, _finding("Early return leaks the bus lock", file="b.c", line=3), "logic@m1")
+    assert a is b and c is not a and [x.id for x in concerns] == ["C1", "C2"]
+    assert a.raised_by == ["logic@m1", "concurrency@m2"] and a.stage == "logic" and a.drafters == {"m1", "m2"}
+    assert a.data["line"] == 3 and a.data["evidence"] == "e1 | e2"  # the first report's text, both evidences
+    assert agreement_line(a, ["m1", "m2"]).startswith("Raised by 2 of 2 draft models (m1, m2)")
+    assert agreement_line(c, ["m1", "m2"]).startswith("Raised by 1 of 2 draft models (m1)")
+    assert agreement_line(a, ["m1"]) == ""  # no ensemble, no agreement talk
+    msg = verification_message("open", concerns, [], ["logic", "concurrency"], ["m1", "m2"])
+    assert "ran independently on 2 draft models (m1, m2)" in msg and "Raised by 1 of 2" in msg
+    assert "draft models" not in verification_message("open", concerns, [], ["logic"], ["m1"])
+
+
+class EnsembleRouter(StageRouter):
+    """Specialists answer as StageRouter does; verification accounts for whatever ids it is shown."""
+
+    def handler(self, request):
+        body = json.loads(request.content)
+        tools = {t["function"]["name"] for t in body["tools"]}
+        if "submit_verification" not in tools:
+            return super().handler(request)
+        self.requests.append(body)
+        text = body["messages"][1]["content"]
+        heads = re.findall(r"^### (C\d+) \[[^\]]*\] (.*?)  \(([^;:]*):", text, flags=re.M)
+        dids = re.findall(r"^### (D\d+) ", text, flags=re.M)
+        out = {
+            "findings": [
+                {**_finding(title, file=file, line=1, severity="low", category="bug"), "source_ids": [cid]}
+                for cid, title, file in heads
+            ],
+            "dismissed": [{"source_ids": dids, "reason": "all cite code"}],
+            "hard_cases": [],
+        }
+        return httpx.Response(
+            200, json=_completion({"content": "", "tool_calls": [_tc("v", "submit_verification", out)]})
+        )
+
+
+async def test_pipeline_ensemble_runs_each_specialist_per_model_and_merges(mini_repo):
+    router = EnsembleRouter(verification_first_attempt_bad=False)
+    intel = SourceIntel(str(mini_repo["root"]), mini_repo["head"], mini_repo["base"])
+    pr = PullRequest(0, "t", "", "", "main", mini_repo["base"], "pr", mini_repo["head"], "", False)
+    opening = opening_message(pr, intel.overview(), intel.diff_text, "", repo="o/r")
+    llms = []
+    for name in ("cheap/model", "second/model", "strong/model"):
+        llm = _llm(ScriptedOpenRouter([]), models=(name,))
+        llm._client = httpx.Client(transport=httpx.MockTransport(router.handler))
+        llms.append(llm)
+    cheap, second, strong = llms
+    async with ToolBridge(build_server(intel)) as bridge:
+        run = await run_pipeline(
+            cheap,
+            strong,
+            bridge,
+            system_prompt(load_profile("zephyr"), "English"),
+            opening,
+            {f.path: f.new_side_lines for f in intel.files},
+            changed_files=[f.path for f in intel.files],
+            added_text="",
+            specialists=["intent", "concurrency", "build_config"],
+            ensemble=[second],
+            log=lambda m: None,
+        )
+    assert run.review is not None and run.errors == []
+    rm = run.review_map
+    assert rm["drafters"] == ["cheap/model", "second/model"]
+    spec = [r for r in router.requests if "submit_concerns" in {t["function"]["name"] for t in r["tools"]}]
+    assert sorted(r["model"] for r in spec) == ["cheap/model"] * 3 + ["second/model"] * 3
+    # Both models raised the same three concerns: the verifier saw three merged candidates, each raised by both,
+    # while dismissals are not merged (a dismissal by one model is that model's evidence).
+    assert [c["raised_by"] for c in rm["concerns"]] == [
+        ["intent@cheap/model", "intent@second/model"],
+        ["concurrency@cheap/model", "concurrency@second/model"],
+        ["build_config@cheap/model", "build_config@second/model"],
+    ]
+    vreq = [r for r in router.requests if "submit_verification" in {t["function"]["name"] for t in r["tools"]}][0]
+    text = vreq["messages"][1]["content"]
+    assert "ran independently on 2 draft models (cheap/model, second/model)" in text
+    assert text.count("Raised by 2 of 2 draft models (cheap/model, second/model)") == 3
+    assert "## Concerns (3)" in text and "## Dismissed concerns (4)" in text
+    # Stage records keep the stage name and say which drafter ran it; the verification saw all four dismissals.
+    drafted = sorted((r["stage"], r["drafter"]) for r in run.stages if "drafter" in r)
+    assert drafted == [
+        ("build_config", "cheap/model"),
+        ("build_config", "second/model"),
+        ("concurrency", "cheap/model"),
+        ("concurrency", "second/model"),
+        ("intent", "cheap/model"),
+        ("intent", "second/model"),
+    ]
+    assert {d["stage"] for d in rm["dismissed_concerns"]} == {
+        "concurrency@cheap/model",
+        "concurrency@second/model",
+        "build_config@cheap/model",
+        "build_config@second/model",
+    }
+    assert [f.title for f in run.review.findings] == [
+        "Commit message does not mention the Kconfig symbol",
+        "Early return leaks the bus lock",
+        "select of undefined I2C_BUS_RECOVERY",
+    ]
+    assert all(c["fate"] == "confirmed" for c in rm["concerns"])

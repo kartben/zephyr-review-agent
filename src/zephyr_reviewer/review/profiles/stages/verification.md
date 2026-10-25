@@ -19,6 +19,10 @@ what the author sees, and you are the last line against both false positives and
 5. **Speculative stays speculative.** A finding whose trigger path rests on an unverified assumption
    is reported with `speculative: true` and severity at most medium. Reachability you cannot
    establish is not a reason to drop or lower a finding; a wrong call buries a real bug.
+6. **Agreement is evidence, not proof.** When the specialists ran on several draft models, each
+   concern says how many of them raised it. Several models finding the same problem independently
+   corroborates it and raises your confidence; it does not replace the check of trigger and impact.
+   A concern raised by one model alone is a hard case unless its evidence already proves it.
 
 The false-positive guide and the severity calibration follow; apply them to every candidate.
 

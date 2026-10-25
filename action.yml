@@ -72,6 +72,13 @@ inputs:
     description: "Comma-separated fallbacks for the draft model."
     required: false
     default: ""
+  draft_ensemble:
+    description: >-
+      multi-stage: comma-separated additional draft models. Every specialist pass runs once per
+      model (draft_model plus these), concerns about the same file and title are merged, and
+      verification is told how many models raised each one. Setting it makes `auto` pick multi-stage.
+    required: false
+    default: ""
   verify_max_steps:
     description: "Step budget of the verifying model in two-stage mode."
     required: false
@@ -296,6 +303,7 @@ runs:
         INPUT_HARD_CASE_MAX_STEPS: ${{ inputs.hard_case_max_steps }}
         INPUT_MAX_HARD_CASES: ${{ inputs.max_hard_cases }}
         INPUT_DRAFT_FALLBACK_MODELS: ${{ inputs.draft_fallback_models }}
+        INPUT_DRAFT_ENSEMBLE: ${{ inputs.draft_ensemble }}
         INPUT_VERIFY_MAX_STEPS: ${{ inputs.verify_max_steps }}
         INPUT_DOSSIER_CHARS: ${{ inputs.dossier_chars }}
         INPUT_TEMPERATURE: ${{ inputs.temperature }}

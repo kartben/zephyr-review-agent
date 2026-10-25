@@ -288,3 +288,58 @@ def test_review_command_multi_stage_pipeline(mini_repo, stub_openrouter, tmp_pat
     assert rm["specialists"] == ["intent", "logic"] and rm["concerns"][0]["fate"] == "confirmed"
     printed = capsys.readouterr().out
     assert "Lock leak on the error path." in printed and "1 finding(s) are posted as inline comments" in printed
+
+
+def test_review_command_draft_ensemble_runs_specialists_on_every_model(
+    mini_repo, stub_openrouter, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("ZR_BASE_URL", stub_openrouter)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test")
+    out_dir = tmp_path / "out"
+    rc = cli.main(
+        [
+            "review",
+            "--repo",
+            str(mini_repo["root"]),
+            "--base",
+            mini_repo["base"],
+            "--head",
+            mini_repo["head"],
+            "--dry-run",
+            "--in-process",
+            "--specialists",
+            "intent,logic",
+            "--draft-model",
+            "cheap/model",
+            "--draft-ensemble",
+            "second/model,cheap/model",  # the drafter itself is not run twice
+            "--output-dir",
+            str(out_dir),
+        ]
+    )
+    assert rc == 0  # no --pipeline: an ensemble makes `auto` pick multi-stage
+    specialist_turns = [
+        r
+        for r in _Stub.turns
+        if ["submit_concerns"]
+        == sorted(t["function"]["name"] for t in r["tools"] if t["function"]["name"].startswith("submit"))
+    ]
+    assert sorted(r["model"] for r in specialist_turns) == [
+        "cheap/model",
+        "cheap/model",
+        "second/model",
+        "second/model",
+    ]
+    rm = json.loads((out_dir / "review_map.json").read_text())
+    assert rm["drafters"] == ["cheap/model", "second/model"]
+    assert rm["concerns"] == [
+        {
+            **rm["concerns"][0],
+            "id": "C1",
+            "stage": "logic",
+            "raised_by": ["logic@cheap/model", "logic@second/model"],
+            "fate": "confirmed",
+        }
+    ]
+    printed = capsys.readouterr().out
+    assert "Lock leak on the error path." in printed

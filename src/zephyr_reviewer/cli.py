@@ -52,6 +52,11 @@ def _add_review_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--specialists", help="multi-stage: comma-separated specialist passes instead of planning them")
     p.add_argument("--draft-model", help="Low-cost model: drafts in two-stage, runs the specialists in multi-stage")
     p.add_argument("--draft-fallback-models", help="Comma-separated fallbacks for the draft model")
+    p.add_argument(
+        "--draft-ensemble",
+        help="multi-stage: comma-separated extra draft models; every specialist runs once per model and "
+        "verification sees how many agreed",
+    )
     p.add_argument("--verify-max-steps", type=int, help="Step budget of the verifying model in two-stage mode")
     p.add_argument("--api-key", help="OpenRouter API key (default: $OPENROUTER_API_KEY)")
     p.add_argument("--github-token", help="GitHub token (default: $GITHUB_TOKEN)")
@@ -148,6 +153,8 @@ def _config(args: argparse.Namespace) -> ReviewConfig:
         cfg.draft_models = cfg.draft_models[:1] + [
             m.strip() for m in args.draft_fallback_models.split(",") if m.strip()
         ]
+    if args.draft_ensemble:
+        cfg.draft_ensemble = [m.strip() for m in args.draft_ensemble.split(",") if m.strip()]
     if args.verify_max_steps is not None:
         cfg.verify_max_steps = args.verify_max_steps
     if args.test_plan:
@@ -377,7 +384,24 @@ async def _run(
             if cfg.draft_models
             else llm
         )
+        if cfg.draft_ensemble and mode != "multi-stage":
+            log(f"draft_ensemble is only used by the multi-stage pipeline; ignored in {mode}")
         if mode == "multi-stage":
+            # Ensemble members share the draft fallback chain; a member that fails over still counts as itself.
+            ensemble = [
+                OpenRouter(
+                    cfg.openrouter_api_key,
+                    [m, *[f for f in cfg.draft_models[1:] if f != m]],
+                    base_url=cfg.base_url,
+                    temperature=cfg.temperature,
+                    max_tokens=cfg.max_tokens,
+                    provider=cfg.provider,
+                    timeout=cfg.model_timeout_seconds,
+                    on_event=log,
+                )
+                for m in cfg.draft_ensemble
+                if m not in cheap_llm.models[:1]
+            ]
             run = await run_pipeline(
                 cheap_llm,
                 llm,
@@ -392,6 +416,7 @@ async def _run(
                 verify_max_steps=cfg.verify_max_steps,
                 hard_case_max_steps=cfg.hard_case_max_steps,
                 max_hard_cases=cfg.max_hard_cases,
+                ensemble=ensemble,
                 max_context_tokens=cfg.max_context_tokens,
                 max_seconds=cfg.max_stage_seconds,
                 extra_tools=extra_tools,

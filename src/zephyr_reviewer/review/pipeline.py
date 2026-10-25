@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib import resources
 from typing import Any
 
@@ -25,6 +25,7 @@ from .agent import AgentResult, LocalTool, RunResult, TerminalTool, run_agent
 from .mcp_client import ToolBridge
 from .openrouter import OpenRouter, Usage
 from .prompts import load_guides
+from .render import normalize_title
 from .schema import (
     CATEGORIES,
     CONFIDENCES,
@@ -115,10 +116,38 @@ class Concern:
     id: str
     stage: str
     data: dict[str, Any]  # finding-shaped
+    raised_by: list[str] = field(default_factory=list)  # "stage" or "stage@model" for every pass that raised it
 
     @property
     def title(self) -> str:
         return str(self.data.get("title") or "")
+
+    @property
+    def drafters(self) -> set[str]:
+        """The draft models that raised this concern (empty when a single drafter ran, unlabelled)."""
+        return {r.split("@", 1)[1] for r in self.raised_by if "@" in r}
+
+
+def concern_key(data: dict[str, Any]) -> str:
+    """Two concerns about the same file with the same title are one root cause; the same key the inline
+    deduplication uses, so lineage and posting agree on what 'the same finding' means."""
+    return f"{data.get('file') or ''}:{normalize_title(str(data.get('title') or ''))}"
+
+
+def merge_concern(concerns: list[Concern], data: dict[str, Any], raised_by: str) -> Concern:
+    """Append a specialist concern, or fold it into the existing concern with the same key. The first
+    report keeps its text; later ones only add their origin, so the verifier sees one candidate and
+    how many passes found it."""
+    key = concern_key(data)
+    for c in concerns:
+        if concern_key(c.data) == key:
+            c.raised_by.append(raised_by)
+            if data.get("evidence") and str(data["evidence"]) not in str(c.data.get("evidence") or ""):
+                c.data["evidence"] = f"{c.data.get('evidence') or ''} | {data['evidence']}".strip(" |")
+            return c
+    c = Concern(f"C{len(concerns) + 1}", raised_by.split("@", 1)[0], data, [raised_by])
+    concerns.append(c)
+    return c
 
 
 @dataclass
@@ -436,13 +465,15 @@ def _id_key(sid: str) -> tuple[str, int]:
 
 
 # ------------------------------------------------------------------------ rendering
-def _finding_block(d: dict[str, Any], sid: str, stage: str) -> str:
+def _finding_block(d: dict[str, Any], sid: str, stage: str, agreement: str = "") -> str:
     loc = f"{d.get('file', '')}:{d.get('line', 0)}" + (f"-{d['end_line']}" if d.get("end_line") else "")
     lines = [
         f"### {sid} [{d.get('severity', '?')}{', speculative' if d.get('speculative') else ''}] {d.get('title', '')}  "
         f"({loc}; from {stage}; confidence {d.get('confidence', '?')})",
         f"Problem: {d.get('problem', '')}",
     ]
+    if agreement:
+        lines.append(agreement)
     for key in ("trigger", "impact", "recommendation", "evidence"):
         if d.get(key):
             lines.append(f"{key.capitalize()}: {d[key]}")
@@ -457,13 +488,37 @@ def _dismissal_block(d: Dismissal) -> str:
     )
 
 
+def agreement_line(c: Concern, drafters: list[str]) -> str:
+    """How many of the ensemble's draft models raised this concern; empty without an ensemble."""
+    if len(drafters) < 2:
+        return ""
+    found = c.drafters
+    return (
+        f"Raised by {len(found)} of {len(drafters)} draft models ({', '.join(sorted(found))}) "
+        f"via {', '.join(c.raised_by)}."
+    )
+
+
 def verification_message(
-    opening: str, concerns: list[Concern], dismissals: list[Dismissal], stages_run: list[str]
+    opening: str,
+    concerns: list[Concern],
+    dismissals: list[Dismissal],
+    stages_run: list[str],
+    drafters: list[str] | None = None,
 ) -> str:
+    drafters = drafters or []
     parts = [opening, "", "## Specialist output", f"Stages run: {', '.join(stages_run)}.", ""]
+    if len(drafters) > 1:
+        parts += [
+            f"Every specialist ran independently on {len(drafters)} draft models ({', '.join(drafters)}); concerns "
+            "about the same file and title were merged, and each one says how many of the models raised it. "
+            "Agreement corroborates a concern. A concern raised by one model only is not wrong for that reason, but "
+            "it belongs in hard_cases unless its evidence already proves it.",
+            "",
+        ]
     parts.append(f"## Concerns ({len(concerns)})" if concerns else "## Concerns (none)")
     for c in concerns:
-        parts += ["", _finding_block(c.data, c.id, c.stage)]
+        parts += ["", _finding_block(c.data, c.id, c.stage, agreement_line(c, drafters))]
     parts += ["", f"## Dismissed concerns ({len(dismissals)})" if dismissals else "## Dismissed concerns (none)"]
     for d in dismissals:
         parts += ["", _dismissal_block(d)]
@@ -472,7 +527,11 @@ def verification_message(
 
 
 def hard_case_message(
-    opening: str, case: HardCase, concerns: dict[str, Concern], dismissals: dict[str, Dismissal]
+    opening: str,
+    case: HardCase,
+    concerns: dict[str, Concern],
+    dismissals: dict[str, Dismissal],
+    drafters: list[str] | None = None,
 ) -> str:
     parts = [
         opening,
@@ -484,7 +543,8 @@ def hard_case_message(
     ]
     for sid in case.source_ids:
         if sid in concerns:
-            parts += [_finding_block(concerns[sid].data, sid, concerns[sid].stage), ""]
+            c = concerns[sid]
+            parts += [_finding_block(c.data, sid, c.stage, agreement_line(c, drafters or [])), ""]
         elif sid in dismissals:
             parts += [_dismissal_block(dismissals[sid]), ""]
     parts.append("Investigate with the tools, then call `submit_hard_case_verdict`.")
@@ -559,12 +619,18 @@ async def run_pipeline(
     max_context_tokens: int = 160_000,
     max_seconds: float = 0,
     extra_tools: list[LocalTool] | None = None,
+    ensemble: list[OpenRouter] | None = None,
     log=print,
 ) -> RunResult:
+    """Run the specialist pipeline. `ensemble` adds further draft models: every specialist then runs once per
+    model, concerns with the same file and title are merged, and verification sees how many models agreed."""
     started = time.monotonic()
     stages = specialists or plan_specialists(changed_files, added_text)
+    drafter_llms = [specialist_llm, *(ensemble or [])]
+    drafters = [llm.models[0] if llm.models else "unknown" for llm in drafter_llms]
     log(
-        f"pipeline: specialists {', '.join(stages)} on {', '.join(specialist_llm.models)}; "
+        f"pipeline: specialists {', '.join(stages)} on {', '.join(drafters)}"
+        f"{' (ensemble: each specialist runs once per model)' if len(drafters) > 1 else ''}; "
         f"verification on {', '.join(verify_llm.models)}"
     )
     records: list[dict[str, Any]] = []
@@ -576,7 +642,7 @@ async def run_pipeline(
     # 1. Specialists, in parallel.
     contract = _stage_prompt("concerns_output")
 
-    async def specialist(name: str) -> tuple[str, AgentResult]:
+    async def specialist(name: str, llm: OpenRouter, label: str) -> tuple[str, str, AgentResult]:
         system = base_system + "\n\n" + _stage_prompt(name) + contract
         terminal = TerminalTool(
             SUBMIT_CONCERNS_TOOL,
@@ -584,7 +650,7 @@ async def run_pipeline(
             lambda o: f"{len(o['concerns'])} concern(s), {len(o['dismissed'])} dismissed",
         )
         res = await run_agent(
-            specialist_llm,
+            llm,
             bridge,
             system,
             opening,
@@ -594,32 +660,37 @@ async def run_pipeline(
             max_seconds=max_seconds,
             extra_tools=extra_tools,
             log=log,
-            label=name,
+            label=label,
         )
-        return name, res
+        return name, label, res
 
-    results = await asyncio.gather(*(specialist(s) for s in stages))
+    # One pass per stage; with an ensemble, one pass per stage per draft model, labelled stage@model.
+    jobs = [
+        (s, llm, s if len(drafter_llms) == 1 else f"{s}@{model}")
+        for s in stages
+        for llm, model in zip(drafter_llms, drafters, strict=True)
+    ]
+    results = await asyncio.gather(*(specialist(*j) for j in jobs))
     concerns: list[Concern] = []
     dismissals: list[Dismissal] = []
-    for name, res in results:
+    for name, label, res in results:
         usages.append(res.usage)
         models += [m for m in res.models_used if m not in models]
-        transcript += [{**t, "stage": name} for t in res.transcript]
+        transcript += [{**t, "stage": label} for t in res.transcript]
+        extra: dict[str, Any] = {"drafter": label.split("@", 1)[1]} if "@" in label else {}
         if res.output is None:
-            errors.append(f"specialist {name} did not submit: {'; '.join(res.errors)}")
-            records.append(_stage_record(name, res, {"concerns": [], "dismissed": []}))
+            errors.append(f"specialist {label} did not submit: {'; '.join(res.errors)}")
+            records.append(_stage_record(name, res, {**extra, "concerns": [], "dismissed": []}))
             continue
         ids_c, ids_d = [], []
         for c in res.output["concerns"]:
-            cid = f"C{len(concerns) + 1}"
-            concerns.append(Concern(cid, name, c))
-            ids_c.append(cid)
+            ids_c.append(merge_concern(concerns, c, label).id)
         for d in res.output["dismissed"]:
             did = f"D{len(dismissals) + 1}"
             dismissals.append(
                 Dismissal(
                     did,
-                    name,
+                    label,
                     str(d.get("title") or ""),
                     str(d.get("file") or ""),
                     int(d.get("line") or 0),
@@ -628,8 +699,12 @@ async def run_pipeline(
                 )
             )
             ids_d.append(did)
-        records.append(_stage_record(name, res, {"concerns": ids_c, "dismissed": ids_d}))
-    log(f"specialists produced {len(concerns)} concern(s) and {len(dismissals)} dismissal(s)")
+        records.append(_stage_record(name, res, {**extra, "concerns": ids_c, "dismissed": ids_d}))
+    raised = sum(len(c.raised_by) for c in concerns)
+    log(
+        f"specialists produced {len(concerns)} concern(s) and {len(dismissals)} dismissal(s)"
+        + (f" ({raised} raised before merging duplicates)" if raised != len(concerns) else "")
+    )
 
     by_c = {c.id: c for c in concerns}
     by_d = {d.id: d for d in dismissals}
@@ -653,7 +728,7 @@ async def run_pipeline(
             verify_llm,
             bridge,
             system,
-            verification_message(opening, concerns, dismissals, stages),
+            verification_message(opening, concerns, dismissals, stages, drafters),
             terminal,
             max_steps=verify_max_steps,
             max_context_tokens=max_context_tokens,
@@ -725,7 +800,7 @@ async def run_pipeline(
                 verify_llm,
                 bridge,
                 system,
-                hard_case_message(opening, case, by_c, by_d),
+                hard_case_message(opening, case, by_c, by_d, drafters),
                 terminal,
                 max_steps=hard_case_max_steps,
                 max_context_tokens=max_context_tokens,
@@ -827,10 +902,12 @@ async def run_pipeline(
 
     review_map = {
         "specialists": stages,
+        "drafters": drafters,
         "concerns": [
             {
                 "id": c.id,
                 "stage": c.stage,
+                "raised_by": c.raised_by,
                 "title": c.title,
                 "file": c.data.get("file"),
                 "line": c.data.get("line"),
