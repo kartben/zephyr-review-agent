@@ -343,3 +343,44 @@ def test_review_command_draft_ensemble_runs_specialists_on_every_model(
     ]
     printed = capsys.readouterr().out
     assert "Lock leak on the error path." in printed
+
+
+def test_draft_ensemble_without_a_draft_model_never_runs_specialists_on_the_verifier(
+    mini_repo, stub_openrouter, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("ZR_BASE_URL", stub_openrouter)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test")
+    out_dir = tmp_path / "out"
+    rc = cli.main(
+        [
+            "review",
+            "--repo",
+            str(mini_repo["root"]),
+            "--base",
+            mini_repo["base"],
+            "--head",
+            mini_repo["head"],
+            "--dry-run",
+            "--in-process",
+            "--pipeline",
+            "multi-stage",
+            "--specialists",
+            "intent,logic",
+            "--model",
+            "strong/model",
+            "--draft-ensemble",
+            "cheap/a,cheap/b",
+            "--output-dir",
+            str(out_dir),
+        ]
+    )
+    assert rc == 0
+    by_terminal: dict[str, set[str]] = {}
+    for r in _Stub.turns:
+        for t in r["tools"]:
+            if t["function"]["name"].startswith("submit"):
+                by_terminal.setdefault(t["function"]["name"], set()).add(r["model"])
+    assert by_terminal["submit_concerns"] == {"cheap/a", "cheap/b"}  # the verifier drafts nothing
+    assert by_terminal["submit_verification"] == {"strong/model"} and by_terminal["submit_report"] == {"strong/model"}
+    rm = json.loads((out_dir / "review_map.json").read_text())
+    assert rm["drafters"] == ["cheap/a", "cheap/b"]

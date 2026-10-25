@@ -370,10 +370,16 @@ async def _run(
         target, max_result_chars=cfg.max_tool_result_chars, call_timeout=float(cfg.tool_timeout_seconds)
     ) as bridge:
         log(f"MCP server up with {len(bridge.tools)} tool(s); models: {', '.join(cfg.models)}")
-        cheap_llm = (
-            OpenRouter(
+        # The models that draft (two-stage) or run the specialists (multi-stage): draft_model first, then the
+        # ensemble. With an ensemble and no draft_model, the first ensemble member drafts; the verification model
+        # never runs a specialist pass, otherwise it would be judging its own candidates.
+        drafters = cfg.draft_models[:1] + [m for m in cfg.draft_ensemble if m not in cfg.draft_models[:1]]
+        fallbacks = cfg.draft_models[1:]
+
+        def drafter(model: str) -> OpenRouter:
+            return OpenRouter(
                 cfg.openrouter_api_key,
-                cfg.draft_models,
+                [model, *[f for f in fallbacks if f != model]],
                 base_url=cfg.base_url,
                 temperature=cfg.temperature,
                 max_tokens=cfg.max_tokens,
@@ -381,27 +387,12 @@ async def _run(
                 timeout=cfg.model_timeout_seconds,
                 on_event=log,
             )
-            if cfg.draft_models
-            else llm
-        )
+
+        cheap_llm = drafter(drafters[0]) if drafters else llm
         if cfg.draft_ensemble and mode != "multi-stage":
             log(f"draft_ensemble is only used by the multi-stage pipeline; ignored in {mode}")
         if mode == "multi-stage":
-            # Ensemble members share the draft fallback chain; a member that fails over still counts as itself.
-            ensemble = [
-                OpenRouter(
-                    cfg.openrouter_api_key,
-                    [m, *[f for f in cfg.draft_models[1:] if f != m]],
-                    base_url=cfg.base_url,
-                    temperature=cfg.temperature,
-                    max_tokens=cfg.max_tokens,
-                    provider=cfg.provider,
-                    timeout=cfg.model_timeout_seconds,
-                    on_event=log,
-                )
-                for m in cfg.draft_ensemble
-                if m not in cheap_llm.models[:1]
-            ]
+            ensemble = [drafter(m) for m in drafters[1:]]
             run = await run_pipeline(
                 cheap_llm,
                 llm,
