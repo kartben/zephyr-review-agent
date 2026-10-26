@@ -70,6 +70,7 @@ class ReviewConfig:
     lockdown: str = "label"
     include_discussion: bool = True
     include_linked: bool = True
+    external_findings_path: str = ""  # a file of findings from a human or another tool, verified by the run
     max_linked_items: int = 8
     max_linked_chars: int = 8_000
     max_discussion_chars: int = 12_000
@@ -140,6 +141,7 @@ class ReviewConfig:
         cfg.lockdown = _env("lockdown", "label").strip().lower() or "label"
         cfg.include_discussion = _bool(_env("include_discussion"), True)
         cfg.include_linked = _bool(_env("include_linked_issues"), True)
+        cfg.external_findings_path = _env("external_findings", "").strip()
         cfg.max_linked_items = int(_env("max_linked_issues", str(cfg.max_linked_items)))
         cfg.max_linked_chars = int(_env("max_linked_chars", str(cfg.max_linked_chars)))
         cfg.max_discussion_chars = int(_env("max_discussion_chars", str(cfg.max_discussion_chars)))

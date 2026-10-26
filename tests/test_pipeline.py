@@ -13,6 +13,7 @@ import httpx
 from tests.test_agent import ScriptedOpenRouter, _completion, _llm
 from zephyr_reviewer.intel import SourceIntel
 from zephyr_reviewer.mcp_server import build_server
+from zephyr_reviewer.review.external import Claim
 from zephyr_reviewer.review.github_api import PullRequest
 from zephyr_reviewer.review.mcp_client import ToolBridge
 from zephyr_reviewer.review.pipeline import (
@@ -645,7 +646,9 @@ def test_concerns_with_the_same_file_and_title_merge_and_count_their_drafters():
 
 
 class EnsembleRouter(StageRouter):
-    """Specialists answer as StageRouter does; verification accounts for whatever ids it is shown."""
+    """Specialists answer as StageRouter does; verification accounts for whatever ids it is shown: C* become
+    findings, D* are dismissed, X* (external claims) go to hard cases, where StageRouter confirms the one that
+    mentions I2C_BUS_RECOVERY and refutes the rest."""
 
     def handler(self, request):
         body = json.loads(request.content)
@@ -656,13 +659,16 @@ class EnsembleRouter(StageRouter):
         text = body["messages"][1]["content"]
         heads = re.findall(r"^### (C\d+) \[[^\]]*\] (.*?)  \(([^;:]*):", text, flags=re.M)
         dids = re.findall(r"^### (D\d+) ", text, flags=re.M)
+        xids = re.findall(r"^### (X\d+) ", text, flags=re.M)
         out = {
             "findings": [
                 {**_finding(title, file=file, line=1, severity="low", category="bug"), "source_ids": [cid]}
                 for cid, title, file in heads
             ],
-            "dismissed": [{"source_ids": dids, "reason": "all cite code"}],
-            "hard_cases": [],
+            "dismissed": [{"source_ids": dids, "reason": "all cite code"}] if dids else [],
+            "hard_cases": [
+                {"source_ids": [x], "question": "is the supplied claim real?", "severity_hint": "medium"} for x in xids
+            ],
         }
         return httpx.Response(
             200, json=_completion({"content": "", "tool_calls": [_tc("v", "submit_verification", out)]})
@@ -733,3 +739,84 @@ async def test_pipeline_ensemble_runs_each_specialist_per_model_and_merges(mini_
         "select of undefined I2C_BUS_RECOVERY",
     ]
     assert all(c["fate"] == "confirmed" for c in rm["concerns"])
+
+
+def test_verification_must_account_for_external_claim_ids():
+    parse = make_verification_parser({"C1", "X1"}, {"D1"})
+    out, errors = parse(
+        {
+            "findings": [{**_finding("t"), "source_ids": ["C1"]}],
+            "dismissed": [{"source_ids": ["D1"], "reason": "r"}],
+            "hard_cases": [],
+        }
+    )
+    assert out is None and any("missing: X1" in e for e in errors)
+    out, errors = parse(
+        {
+            "findings": [{**_finding("t"), "source_ids": ["C1", "X1"]}],
+            "dismissed": [{"source_ids": ["D1"], "reason": "r"}],
+            "hard_cases": [],
+        }
+    )
+    assert out is not None and errors == [] and out.findings[0]["source_ids"] == ["C1", "X1"]
+    out, errors = parse(
+        {
+            "findings": [],
+            "dismissed": [{"source_ids": ["X1", "D1"], "reason": "r"}],
+            "hard_cases": [{"source_ids": ["C1"], "question": "q", "severity_hint": "low"}],
+        }
+    )
+    assert out is None and any("X1 is not allowed in dismissed" in e for e in errors)
+
+
+async def test_pipeline_verifies_external_claims_and_reports_a_verdict_for_each(mini_repo):
+    router = EnsembleRouter(verification_first_attempt_bad=False)
+    intel = SourceIntel(str(mini_repo["root"]), mini_repo["head"], mini_repo["base"])
+    pr = PullRequest(0, "t", "", "", "main", mini_repo["base"], "pr", mini_repo["head"], "", False)
+    opening = opening_message(pr, intel.overview(), intel.diff_text, "", repo="o/r")
+    cheap = _llm(ScriptedOpenRouter([]), models=("cheap/model",))
+    strong = _llm(ScriptedOpenRouter([]), models=("strong/model",))
+    for llm in (cheap, strong):
+        llm._client = httpx.Client(transport=httpx.MockTransport(router.handler))
+    claims = [
+        Claim(
+            "X1",
+            "drivers/i2c/Kconfig:20: I2C_BUS_RECOVERY is selected but never defined",
+            "drivers/i2c/Kconfig",
+            20,
+            "notes.txt",
+        ),
+        Claim("X2", "drivers/i2c/i2c_foo.c:30: the semaphore count is wrong", "drivers/i2c/i2c_foo.c", 30, "notes.txt"),
+    ]
+    async with ToolBridge(build_server(intel)) as bridge:
+        run = await run_pipeline(
+            cheap,
+            strong,
+            bridge,
+            system_prompt(load_profile("zephyr"), "English"),
+            opening,
+            {f.path: f.new_side_lines for f in intel.files},
+            changed_files=[f.path for f in intel.files],
+            added_text="",
+            specialists=["intent"],
+            claims=claims,
+            log=lambda m: None,
+        )
+    assert run.review is not None and run.errors == []
+    vreq = [r for r in router.requests if "submit_verification" in {t["function"]["name"] for t in r["tools"]}][0]
+    text = vreq["messages"][1]["content"]
+    assert "## External claims (2)" in text and "### X1 [medium, speculative]" in text and "from external" in text
+    assert "Being supplied is not evidence." in text
+    verdicts = {c.id: c for c in run.review.external_claims}
+    assert verdicts["X1"].verdict == "confirmed" and verdicts["X1"].finding_id.startswith("HF")
+    assert verdicts["X2"].verdict == "refuted" and "second commit message" in verdicts["X2"].reason
+    assert (
+        verdicts["X1"].title == "I2C_BUS_RECOVERY is selected but never defined"
+        and verdicts["X1"].source == "notes.txt"
+    )
+    titles = [f.title for f in run.review.findings]
+    assert "select of undefined I2C_BUS_RECOVERY" in titles  # the hard case's confirmed finding
+    xmap = {c["id"]: c for c in run.review_map["external_claims"]}
+    assert xmap["X1"]["fate"] == "confirmed" and xmap["X2"]["fate"] == "refuted"
+    rreq = [r for r in router.requests if "submit_report" in {t["function"]["name"] for t in r["tools"]}][0]
+    assert "External claims checked: 1 confirmed, 1 refuted, 0 undecided" in rreq["messages"][1]["content"]

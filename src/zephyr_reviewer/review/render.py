@@ -161,6 +161,8 @@ def render_comment(
         out += ["### Unresolved discussion", "", review.discussion_assessment, ""]
     if review.test_plan:
         out += render_test_plan(review)
+    if review.external_claims:
+        out += render_claims(review)
     if refuted:
         out += render_refuted(run)
     out += ["---", f"<sub>{run_details(run, pr) + ' ' if details else ''}{ADVISORY}</sub>"]
@@ -306,6 +308,30 @@ def refuted_candidates(run: RunResult) -> list[tuple[str, str, str]]:
     for c in rm.get("concerns", []):
         if c.get("fate") == "refuted":
             out.append((str(c.get("title") or ""), str(c.get("stage") or ""), str(c.get("reason") or "").strip()))
+    return out
+
+
+def render_claims(review: Review) -> list[str]:
+    """What became of the findings supplied from outside the run: confirmed ones are among the findings above,
+    the rest are listed with the reason, so the person who supplied them gets an answer to each."""
+    claims = review.external_claims
+    if not claims:
+        return []
+    src = {c.source for c in claims if c.source}
+    where = f" from {', '.join(sorted(src))}" if src else ""
+    tally = {v: sum(1 for c in claims if c.verdict == v) for v in ("confirmed", "refuted", "undecided")}
+    out = [
+        f"### Claims checked ({len(claims)}{where})",
+        "",
+        f"{tally['confirmed']} confirmed, {tally['refuted']} refuted, {tally['undecided']} undecided. "
+        "Confirmed claims appear among the findings.",
+        "",
+    ]
+    for c in claims:
+        loc = f" `{c.file}:{c.line}`" if c.file and c.line else f" `{c.file}`" if c.file else ""
+        why = f": {c.reason[:300].rstrip('.')}" if c.reason and c.verdict != "confirmed" else ""
+        out.append(f"- **{c.verdict}** {c.id}{loc} {c.title}{why}")
+    out.append("")
     return out
 
 

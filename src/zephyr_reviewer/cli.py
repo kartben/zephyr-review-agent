@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import asdict
 
 from . import mcp_server
 from .intel import SourceIntel
@@ -20,6 +21,7 @@ from .review.agent import LocalTool, run_review
 from .review.ci import CI_FAILURE_LOGS_TOOL, CI_STATUS_TOOL, CIResults
 from .review.config import ReviewConfig
 from .review.discussion import PR_DISCUSSION_TOOL, Discussion, trust_level
+from .review.external import Claim, claims_digest, parse_claims, reconcile
 from .review.github_api import GitHub, PullRequest, pr_number_from_event
 from .review.linked import LINKED_ISSUE_TOOL, Linked, load_linked
 from .review.mcp_client import ToolBridge, stdio_params
@@ -82,6 +84,12 @@ def _add_review_args(p: argparse.ArgumentParser) -> None:
     )
     p.add_argument("--no-ci", action="store_true", help="Do not fetch CI results")
     p.add_argument("--no-linked", action="store_true", help="Do not fetch issues and PRs the change refers to")
+    p.add_argument(
+        "--findings",
+        metavar="FILE",
+        help="Findings from a human or another tool (text with numbered items, or JSON) to verify in this run: "
+        "each becomes a claim X* the models confirm or refute",
+    )
     p.add_argument(
         "--no-discussion",
         action="store_true",
@@ -165,6 +173,8 @@ def _config(args: argparse.Namespace) -> ReviewConfig:
         cfg.include_linked = False
     if args.no_discussion:
         cfg.include_discussion = False
+    if args.findings:
+        cfg.external_findings_path = args.findings
     if args.show_details:
         cfg.show_run_details = True
     if args.post_details:
@@ -321,6 +331,7 @@ async def _run(
     ci: CIResults | None = None,
     author_trust: str = "",
     linked: Linked | None = None,
+    claims: list[Claim] | None = None,
 ):
     profile = load_profile(cfg.profile)
     mode = cfg.effective_pipeline()
@@ -345,6 +356,8 @@ async def _run(
         ci_summary=ci.summary_line() if ci else "",
         prefetched=prefetched,
         linked=linked.digest(cfg.max_linked_chars) if linked else None,
+        claims=claims_digest(claims) if claims else None,
+        claims_source=claims[0].source if claims else "",
     )
     extra_tools = [LocalTool(PR_DISCUSSION_TOOL, discussion.tool_handler)] if discussion else []
     if linked:
@@ -408,6 +421,7 @@ async def _run(
                 hard_case_max_steps=cfg.hard_case_max_steps,
                 max_hard_cases=cfg.max_hard_cases,
                 ensemble=ensemble,
+                claims=claims,
                 max_context_tokens=cfg.max_context_tokens,
                 max_seconds=cfg.max_stage_seconds,
                 extra_tools=extra_tools,
@@ -443,7 +457,28 @@ async def _run(
                 extra_tools=extra_tools,
                 log=log,
             )
+    if claims and mode != "multi-stage" and run.review is not None:
+        # The single agent reports verdicts itself; fill in the claim text and mark the ones it skipped.
+        reconcile(run.review, claims, [asdict(v) for v in run.review.external_claims])
     return run
+
+
+def _load_claims(cfg: ReviewConfig) -> list[Claim] | None:
+    """The claims in the findings file, [] when none is configured, None when the file cannot be read."""
+    if not cfg.external_findings_path:
+        return []
+    path = cfg.external_findings_path
+    try:
+        text = open(path, encoding="utf-8").read()
+    except OSError as exc:
+        log(f"::error::cannot read findings file {path}: {exc}")
+        return None
+    claims = parse_claims(text, source=os.path.basename(path))
+    if not claims:
+        log(f"findings file {path} contains no claims")
+    else:
+        log(f"{len(claims)} claim(s) to verify from {path}: " + "; ".join(f"{c.id} {c.title[:60]}" for c in claims))
+    return claims
 
 
 def cmd_review(args: argparse.Namespace) -> int:
@@ -466,6 +501,9 @@ def cmd_review(args: argparse.Namespace) -> int:
         return 0
     log(f"reviewing {len(intel.files)} file(s), {len(intel.commits)} commit(s): {cfg.base[:12]}..{cfg.head[:12]}")
     author_trust = trust_level(gh, pr.author, False) if gh is not None and cfg.lockdown != "off" and pr.author else ""
+    claims = _load_claims(cfg)
+    if claims is None:
+        return 2  # a configuration error, like a bad flag: nothing was reviewed
     try:
         discussion = _load_discussion(cfg, gh, pr)
         run = asyncio.run(
@@ -477,6 +515,7 @@ def cmd_review(args: argparse.Namespace) -> int:
                 _load_ci(cfg, gh, pr),
                 author_trust,
                 _load_linked(cfg, gh, pr, intel, discussion),
+                claims,
             )
         )
     except Exception as exc:  # noqa: BLE001 - report, save what we can, exit non-zero

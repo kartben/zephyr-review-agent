@@ -166,6 +166,21 @@ SUBMIT_REVIEW_TOOL: dict[str, Any] = {
                         },
                     },
                 },
+                "external_claims": {
+                    "type": "array",
+                    "description": "One entry per claim X* in the opening message: confirmed (it is also in "
+                    "findings), refuted (reason cites the disproving code) or undecided.",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["id", "verdict", "reason"],
+                        "properties": {
+                            "id": {"type": "string"},
+                            "verdict": {"type": "string", "enum": ["confirmed", "refuted", "undecided"]},
+                            "reason": {"type": "string"},
+                        },
+                    },
+                },
                 "discussion_assessment": {
                     "type": "string",
                     "description": "Only when the existing discussion leaves a problem: a reviewer's request the head "
@@ -204,6 +219,20 @@ class Finding:
 
 
 @dataclass
+class ClaimVerdict:
+    """What the review decided about a finding supplied from outside (a human's note, another tool)."""
+
+    id: str
+    verdict: str  # confirmed | refuted | undecided
+    reason: str = ""
+    title: str = ""
+    file: str = ""
+    line: int = 0
+    source: str = ""
+    finding_id: str = ""  # the verified finding it became, when confirmed in the specialist pipeline
+
+
+@dataclass
 class TestPlanEntry:
     suite: str
     scenario: str
@@ -230,6 +259,7 @@ class Review:
     commit_message_assessment: str = ""
     discussion_assessment: str = ""
     test_plan: list[TestPlanEntry] = field(default_factory=list)
+    external_claims: list[ClaimVerdict] = field(default_factory=list)
 
     def highest_severity(self) -> str:
         for sev in SEVERITIES:
@@ -244,6 +274,7 @@ class Review:
     def from_dict(cls, d: dict[str, Any]) -> Review:
         findings = [Finding(**f) for f in d.get("findings") or []]
         plan = [TestPlanEntry(**e) for e in d.get("test_plan") or []]
+        claims = [ClaimVerdict(**c) for c in d.get("external_claims") or []]
         return cls(
             summary=d.get("summary") or "",
             verdict=d.get("verdict") or "comment",
@@ -253,6 +284,7 @@ class Review:
             commit_message_assessment=d.get("commit_message_assessment") or "",
             discussion_assessment=d.get("discussion_assessment") or "",
             test_plan=plan,
+            external_claims=claims,
         )
 
 
@@ -414,5 +446,16 @@ def parse_review(args: dict[str, Any], changed_lines: dict[str, set[int]]) -> tu
         commit_message_assessment=_issues_only(args.get("commit_message_assessment")),
         discussion_assessment=_issues_only(args.get("discussion_assessment")),
         test_plan=plan,
+        external_claims=[
+            ClaimVerdict(
+                id=str(v.get("id") or "").strip(),
+                verdict=_norm_enum(v.get("verdict"), ["confirmed", "refuted", "undecided"], "undecided"),
+                reason=str(v.get("reason") or "").strip(),
+            )
+            for v in (args.get("external_claims") or [])
+            if isinstance(v, dict) and str(v.get("id") or "").strip()
+        ]
+        if isinstance(args.get("external_claims"), list)
+        else [],
     )
     return review, []

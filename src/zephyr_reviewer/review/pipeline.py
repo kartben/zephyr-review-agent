@@ -22,6 +22,7 @@ from importlib import resources
 from typing import Any
 
 from .agent import AgentResult, LocalTool, RunResult, TerminalTool, run_agent
+from .external import Claim
 from .mcp_client import ToolBridge
 from .openrouter import OpenRouter, Usage
 from .prompts import load_guides
@@ -31,6 +32,7 @@ from .schema import (
     CONFIDENCES,
     SEVERITIES,
     VERDICTS,
+    ClaimVerdict,
     Finding,
     Review,
     _issues_only,
@@ -258,7 +260,8 @@ SUBMIT_VERIFICATION_TOOL: dict[str, Any] = {
             "properties": {
                 "findings": {
                     "type": "array",
-                    "description": "Confirmed problems (merge duplicates). source_ids may reference only C* ids.",
+                    "description": "Confirmed problems (merge duplicates). source_ids may reference only C* and X* "
+                    "ids.",
                     "items": {
                         "type": "object",
                         "additionalProperties": False,
@@ -281,8 +284,8 @@ SUBMIT_VERIFICATION_TOOL: dict[str, Any] = {
                 },
                 "hard_cases": {
                     "type": "array",
-                    "description": "Contested or speculative candidates for individual verification; may reference C* "
-                    "and D*.",
+                    "description": "Contested or speculative candidates for individual verification; may reference C*, "
+                    "X* and D*.",
                     "items": {
                         "type": "object",
                         "additionalProperties": False,
@@ -505,6 +508,7 @@ def verification_message(
     dismissals: list[Dismissal],
     stages_run: list[str],
     drafters: list[str] | None = None,
+    claims: list[Concern] | None = None,
 ) -> str:
     drafters = drafters or []
     parts = [opening, "", "## Specialist output", f"Stages run: {', '.join(stages_run)}.", ""]
@@ -522,6 +526,17 @@ def verification_message(
     parts += ["", f"## Dismissed concerns ({len(dismissals)})" if dismissals else "## Dismissed concerns (none)"]
     for d in dismissals:
         parts += ["", _dismissal_block(d)]
+    if claims:
+        parts += [
+            "",
+            f"## External claims ({len(claims)})",
+            "Supplied from outside the run (a human or another tool) and unverified; the specialists saw them as "
+            "leads. Each X* id must be accounted for like a C* id: confirm it in `findings` only with evidence "
+            "from the code (a specialist concern about the same thing is corroboration, cite both ids), otherwise "
+            "send it to `hard_cases` so it is checked with tools. Being supplied is not evidence.",
+        ]
+        for c in claims:
+            parts += ["", _finding_block(c.data, c.id, c.stage)]
     parts += ["", "Account for every id above, then call `submit_verification`."]
     return "\n".join(parts)
 
@@ -551,19 +566,27 @@ def hard_case_message(
     return "\n".join(parts)
 
 
-def report_message(opening: str, review_findings: list[Finding], refuted: int, specialists: list[str]) -> str:
+def report_message(
+    opening: str,
+    review_findings: list[Finding],
+    refuted: int,
+    specialists: list[str],
+    claims: list[ClaimVerdict] | None = None,
+) -> str:
     parts = [opening, "", "## Verified findings (fixed; do not change them)"]
     if not review_findings:
         parts.append("(none)")
     for i, f in enumerate(review_findings, 1):
         loc = f"{f.file}:{f.line}" if f.file else "general"
         parts.append(f"{i}. [{f.severity}{', speculative' if f.speculative else ''}] {f.title} ({loc}): {f.problem}")
-    parts += [
-        "",
-        f"Specialists run: {', '.join(specialists)}. Candidates refuted in verification: {refuted}.",
-        "",
-        "Call `submit_report` with the top-level assessment.",
-    ]
+    parts += ["", f"Specialists run: {', '.join(specialists)}. Candidates refuted in verification: {refuted}."]
+    if claims:
+        tally = {v: sum(1 for c in claims if c.verdict == v) for v in ("confirmed", "refuted", "undecided")}
+        parts += [
+            f"External claims checked: {tally['confirmed']} confirmed, {tally['refuted']} refuted, "
+            f"{tally['undecided']} undecided (listed separately in the comment; do not restate them).",
+        ]
+    parts += ["", "Call `submit_report` with the top-level assessment."]
     return "\n".join(parts)
 
 
@@ -620,10 +643,13 @@ async def run_pipeline(
     max_seconds: float = 0,
     extra_tools: list[LocalTool] | None = None,
     ensemble: list[OpenRouter] | None = None,
+    claims: list[Claim] | None = None,
     log=print,
 ) -> RunResult:
     """Run the specialist pipeline. `ensemble` adds further draft models: every specialist then runs once per
-    model, concerns with the same file and title are merged, and verification sees how many models agreed."""
+    model, concerns with the same file and title are merged, and verification sees how many models agreed.
+    `claims` are findings supplied from outside (a human, another tool): they enter verification as X* ids
+    that must be confirmed with evidence, sent to a hard case, or refuted, and leave with a verdict."""
     started = time.monotonic()
     stages = specialists or plan_specialists(changed_files, added_text)
     drafter_llms = [specialist_llm, *(ensemble or [])]
@@ -706,7 +732,12 @@ async def run_pipeline(
         + (f" ({raised} raised before merging duplicates)" if raised != len(concerns) else "")
     )
 
-    by_c = {c.id: c for c in concerns}
+    external = [
+        Concern(cl.id, "external", cl.as_finding(), [f"external:{cl.source or 'operator'}"]) for cl in claims or []
+    ]
+    if external:
+        log(f"{len(external)} external claim(s) enter verification as {', '.join(c.id for c in external)}")
+    by_c = {c.id: c for c in [*concerns, *external]}
     by_d = {d.id: d for d in dismissals}
     fates: dict[str, dict[str, Any]] = {}
     final: list[dict[str, Any]] = []
@@ -714,7 +745,7 @@ async def run_pipeline(
 
     # 2. Verification with full accounting; the guides apply here, not in the specialists.
     guides = load_guides()
-    if concerns or dismissals:
+    if concerns or dismissals or external:
         system = base_system + "\n\n" + _stage_prompt("verification") + "\n\n" + guides
         terminal = TerminalTool(
             SUBMIT_VERIFICATION_TOOL,
@@ -728,7 +759,7 @@ async def run_pipeline(
             verify_llm,
             bridge,
             system,
-            verification_message(opening, concerns, dismissals, stages, drafters),
+            verification_message(opening, concerns, dismissals, stages, drafters, external),
             terminal,
             max_steps=verify_max_steps,
             max_context_tokens=max_context_tokens,
@@ -749,7 +780,7 @@ async def run_pipeline(
                 [],
                 [
                     HardCase(f"H{i + 1}", [c.id], "verification stage failed", str(c.data.get("severity", "medium")))
-                    for i, c in enumerate(concerns)
+                    for i, c in enumerate([*concerns, *external])
                 ],
             )
             records.append(_stage_record("verification", vres, {"failed": True}))
@@ -863,13 +894,34 @@ async def run_pipeline(
     for f, src in zip(review.findings, final, strict=False):
         f.evidence = (f.evidence + (" " if f.evidence else "") + f"[{', '.join(src.get('source_ids', []))}]").strip()
 
+    verdicts: list[ClaimVerdict] = []
+    for cl in claims or []:
+        fate = fates.get(cl.id, {})
+        kind = fate.get("fate", "undecided")
+        verdict = "confirmed" if kind == "confirmed" else "refuted" if kind == "refuted" else "undecided"
+        if kind == "confirmed" and fate.get("note"):
+            verdict = "undecided"  # kept as speculative because the hard case could not decide
+        verdicts.append(
+            ClaimVerdict(
+                id=cl.id,
+                verdict=verdict,
+                reason=str(fate.get("reason") or fate.get("note") or ""),
+                title=cl.title,
+                file=cl.file,
+                line=cl.line,
+                source=cl.source,
+                finding_id=str(fate.get("as") or ""),
+            )
+        )
+    review.external_claims = verdicts
+
     system = base_system + "\n\n" + _stage_prompt("report")
     terminal = TerminalTool(SUBMIT_REPORT_TOOL, _parse_report, lambda o: f"report: {o['verdict']}")
     rres = await run_agent(
         verify_llm,
         None,
         system,
-        report_message(opening, review.findings, refuted, stages),
+        report_message(opening, review.findings, refuted, stages, verdicts),
         terminal,
         max_steps=report_max_steps,
         max_context_tokens=max_context_tokens,
@@ -928,6 +980,16 @@ async def run_pipeline(
             for d in dismissals
         ],
         "findings": [{"id": f["_id"], "title": f.get("title"), "source_ids": f.get("source_ids", [])} for f in final],
+        "external_claims": [
+            {
+                "id": c.id,
+                "title": c.title,
+                "file": c.data.get("file"),
+                "line": c.data.get("line"),
+                **fates.get(c.id, {"fate": "unaccounted"}),
+            }
+            for c in external
+        ],
         "stages": records,
     }
     return RunResult(

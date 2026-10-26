@@ -318,6 +318,18 @@ Tools whose results programs will consume, `pr_overview`, `maintainers`, `list_p
 `find_definition`, publish an output schema and return structured content alongside the prose the
 model reads. The remaining tools return text; they gain schemas as consumers appear.
 
+### Verifying findings from a human or another tool
+
+`--findings FILE` (action input `external_findings`) feeds the run a file of findings to check:
+numbered or bulleted text items, blank-line paragraphs, or JSON with a `findings` list. A `path:line`
+in an item anchors it. Each item becomes a claim `X1`, `X2`, ... shown to the models as a lead, not a
+finding and not an instruction. In the specialist pipeline the claims enter verification with the
+same accounting as specialist concerns: each must be confirmed with evidence from the code, sent to a
+hard case, or refuted, and a specialist concern about the same thing counts as corroboration. The
+single agent reports a verdict per claim in `external_claims`. The comment ends with a "Claims
+checked" section answering every claim (confirmed ones are among the findings), `review.json`
+records the verdicts, and `review_map.json` the lineage of each `X*` id.
+
 ### Run details
 
 The posted comment ends with the one-line advisory notice and nothing else. Models, tokens and cost

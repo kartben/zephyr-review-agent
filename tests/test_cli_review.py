@@ -384,3 +384,62 @@ def test_draft_ensemble_without_a_draft_model_never_runs_specialists_on_the_veri
     assert by_terminal["submit_verification"] == {"strong/model"} and by_terminal["submit_report"] == {"strong/model"}
     rm = json.loads((out_dir / "review_map.json").read_text())
     assert rm["drafters"] == ["cheap/a", "cheap/b"]
+
+
+def test_findings_file_claims_are_shown_to_the_model_and_answered(
+    mini_repo, stub_openrouter, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("ZR_BASE_URL", stub_openrouter)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test")
+    notes = tmp_path / "findings.txt"
+    notes.write_text(
+        "2 findings:\n\n1)\ndrivers/i2c/i2c_foo.c:17: lock leak on error\n\n2)\nKconfig default looks wrong\n"
+    )
+    out_dir = tmp_path / "out"
+    rc = cli.main(
+        [
+            "review",
+            "--repo",
+            str(mini_repo["root"]),
+            "--base",
+            mini_repo["base"],
+            "--head",
+            mini_repo["head"],
+            "--dry-run",
+            "--in-process",
+            "--no-inline",
+            "--findings",
+            str(notes),
+            "--output-dir",
+            str(out_dir),
+        ]
+    )
+    assert rc == 0
+    first = _Stub.turns[0]["messages"][1]["content"]
+    assert (
+        "<external_findings>" in first
+        and "[X1] (drivers/i2c/i2c_foo.c:17)" in first
+        and "[X2] Kconfig default" in first
+    )
+    printed = capsys.readouterr().out
+    assert "### Claims checked (2 from findings.txt)" in printed
+    assert "- **undecided** X1 `drivers/i2c/i2c_foo.c:17` lock leak on error" in printed  # the stub gave no verdicts
+    saved = json.loads((out_dir / "review.json").read_text())
+    assert [c["verdict"] for c in saved["review"]["external_claims"]] == ["undecided", "undecided"]
+    # A findings file that cannot be read is a configuration error: exit 2, nothing reviewed.
+    rc = cli.main(
+        [
+            "review",
+            "--repo",
+            str(mini_repo["root"]),
+            "--base",
+            mini_repo["base"],
+            "--head",
+            mini_repo["head"],
+            "--dry-run",
+            "--in-process",
+            "--findings",
+            str(tmp_path / "missing.txt"),
+        ]
+    )
+    assert rc == 2 and "cannot read findings file" in capsys.readouterr().err
