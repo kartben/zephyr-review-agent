@@ -113,6 +113,12 @@ def _add_review_args(p: argparse.ArgumentParser) -> None:
         help="Ignore existing reviews and comments on the PR so they cannot influence the review (testing)",
     )
     p.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Log only the major steps (stages and their results, posting), not every model and tool call",
+    )
+    p.add_argument(
         "--show-details",
         action="store_true",
         help="Log models, steps, tokens, cost and time locally (testing); nothing is posted or put in the job summary",
@@ -194,6 +200,8 @@ def _config(args: argparse.Namespace) -> ReviewConfig:
         cfg.external_findings_path = args.findings
     if args.skip_reviewed:
         cfg.skip_reviewed = args.skip_reviewed
+    if args.quiet:
+        cfg.quiet = True
     if args.show_details:
         cfg.show_run_details = True
     if args.post_details:
@@ -454,6 +462,7 @@ async def _run(
                 max_seconds=cfg.max_stage_seconds,
                 extra_tools=extra_tools,
                 log=log,
+                quiet=cfg.quiet,
             )
         elif mode == "two-stage":
             run = await run_two_stage(
@@ -471,6 +480,7 @@ async def _run(
                 verify_system=verify_system,
                 max_seconds=cfg.max_stage_seconds,
                 log=log,
+                quiet=cfg.quiet,
             )
         else:
             run = await run_review(
@@ -484,6 +494,7 @@ async def _run(
                 max_seconds=cfg.max_stage_seconds,
                 extra_tools=extra_tools,
                 log=log,
+                quiet=cfg.quiet,
             )
     if claims and mode != "multi-stage" and run.review is not None:
         # The single agent reports verdicts itself; fill in the claim text and mark the ones it skipped.

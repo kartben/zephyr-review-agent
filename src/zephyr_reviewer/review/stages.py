@@ -153,6 +153,7 @@ async def run_two_stage(
     verify_system: str | None = None,
     max_seconds: float = 0,
     log=print,
+    quiet: bool = False,
 ) -> RunResult:
     """``system`` drives the draft; ``verify_system`` (default: the same) drives the verifier, and is where
     the false-positive guide and severity calibration belong."""
@@ -170,6 +171,7 @@ async def run_two_stage(
         max_seconds=max_seconds,
         extra_tools=extra_tools,
         log=lambda m: log("  " + m),
+        quiet=quiet,
     )
     stages = [draft.stage_summary("draft")]
 
@@ -198,6 +200,7 @@ async def run_two_stage(
         max_seconds=max_seconds,
         extra_tools=extra_tools,
         log=lambda m: log("  " + m),
+        quiet=quiet,
     )
     stages.append(final.stage_summary("verify"))
 

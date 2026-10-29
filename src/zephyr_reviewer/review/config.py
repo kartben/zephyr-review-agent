@@ -84,6 +84,7 @@ class ReviewConfig:
     post_comment: bool = True
     post_inline: bool = True
     comment_tag: str = "zephyr-reviewer"
+    quiet: bool = False  # log the major steps only, not every model and tool call
     show_run_details: bool = False  # models, tokens, cost and time in the local log only
     post_run_details: bool = False  # ... and in the posted comment and job summary
     show_refuted_candidates: bool = False
@@ -154,6 +155,7 @@ class ReviewConfig:
         cfg.post_comment = _bool(_env("post_comment"), True)
         cfg.post_inline = _bool(_env("post_inline_comments"), True)
         cfg.comment_tag = _env("comment_tag", cfg.comment_tag)
+        cfg.quiet = _bool(_env("quiet"), False)
         cfg.show_run_details = _bool(_env("show_run_details"), False)
         cfg.post_run_details = _bool(_env("post_run_details"), False)
         cfg.show_refuted_candidates = _bool(_env("show_refuted_candidates"), False)

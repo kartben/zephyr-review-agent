@@ -330,6 +330,14 @@ single agent reports a verdict per claim in `external_claims`. The comment ends 
 checked" section answering every claim (confirmed ones are among the findings), `review.json`
 records the verdicts, and `review_map.json` the lineage of each `X*` id.
 
+### Log verbosity
+
+The log records every model call and tool call by default, prefixed with the stage and step. `--quiet`
+(`-q`, or `quiet: "true"` in the action) keeps only the major steps: what is being reviewed, each stage
+starting and finishing with its result and step count, verification and hard-case outcomes, the
+artifacts written and what was posted. Errors and model retries are logged either way, and
+`review.json` keeps the full transcript regardless.
+
 ### Run details
 
 The posted comment ends with the one-line advisory notice and nothing else. Models, tokens and cost

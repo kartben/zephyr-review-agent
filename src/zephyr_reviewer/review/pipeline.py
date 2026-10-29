@@ -645,11 +645,13 @@ async def run_pipeline(
     ensemble: list[OpenRouter] | None = None,
     claims: list[Claim] | None = None,
     log=print,
+    quiet: bool = False,
 ) -> RunResult:
     """Run the specialist pipeline. `ensemble` adds further draft models: every specialist then runs once per
     model, concerns with the same file and title are merged, and verification sees how many models agreed.
     `claims` are findings supplied from outside (a human, another tool): they enter verification as X* ids
-    that must be confirmed with evidence, sent to a hard case, or refuted, and leave with a verdict."""
+    that must be confirmed with evidence, sent to a hard case, or refuted, and leave with a verdict.
+    ``quiet`` logs one line per stage instead of one per model and tool call."""
     started = time.monotonic()
     stages = specialists or plan_specialists(changed_files, added_text)
     drafter_llms = [specialist_llm, *(ensemble or [])]
@@ -687,6 +689,7 @@ async def run_pipeline(
             extra_tools=extra_tools,
             log=log,
             label=label,
+            quiet=quiet,
         )
         return name, label, res
 
@@ -768,6 +771,7 @@ async def run_pipeline(
             extra_tools=extra_tools,
             log=log,
             label="verification",
+            quiet=quiet,
         )
         usages.append(vres.usage)
         models += [m for m in vres.models_used if m not in models]
@@ -839,6 +843,7 @@ async def run_pipeline(
                 extra_tools=extra_tools,
                 log=log,
                 label=case.id,
+                quiet=quiet,
             )
             return batch, res
 
@@ -929,6 +934,7 @@ async def run_pipeline(
         extra_tools=extra_tools,
         log=log,
         label="report",
+        quiet=quiet,
     )
     usages.append(rres.usage)
     models += [m for m in rres.models_used if m not in models]

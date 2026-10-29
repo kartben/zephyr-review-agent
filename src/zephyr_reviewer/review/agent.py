@@ -116,13 +116,17 @@ async def run_agent(
     extra_tools: list[LocalTool] | None = None,
     log=print,
     label: str = "",
+    quiet: bool = False,
 ) -> AgentResult:
     """Model proposes tool calls, the bridge and local tools answer, until the terminal tool is accepted.
 
     ``max_seconds`` (0 = none) is a wall-clock budget: once exceeded, the next model call is forced to submit.
-    While a model call is outstanding a heartbeat line is logged every ``HEARTBEAT_SECONDS``."""
+    While a model call is outstanding a heartbeat line is logged every ``HEARTBEAT_SECONDS``.
+    ``quiet`` drops the per-step lines (model calls, tool calls, heartbeats) and logs one line when the
+    agent finishes: what it submitted, or why it did not, with the step count and time."""
     started = time.monotonic()
     tag = f"[{label}] " if label else ""
+    detail = (lambda msg: None) if quiet else log  # per-step chatter; errors still reach ``log`` via done()
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}, {"role": "user", "content": opening}]
     local = {t.name: t for t in extra_tools or []}
     bridge_tools = list(bridge.tools) if bridge is not None else []
@@ -141,9 +145,11 @@ async def run_agent(
     forced_misses = 0
 
     def done(output: Any, step: int) -> AgentResult:
-        return AgentResult(
-            output, step, usage, models, forced, errors, transcript, time.monotonic() - started, tool_results
-        )
+        seconds = time.monotonic() - started
+        if quiet:
+            what = terminal.describe(output) if output is not None else f"did not submit: {'; '.join(errors)}"
+            log(f"{tag}{what} ({step} step(s), {seconds:.0f}s{', forced' if forced else ''})")
+        return AgentResult(output, step, usage, models, forced, errors, transcript, seconds, tool_results)
 
     # Once the budget is out the model is forced to submit; GRACE_STEPS more turns allow a rejected or
     # malformed forced submission to be retried instead of losing the whole run's work.
@@ -155,7 +161,7 @@ async def run_agent(
         if budget_out and not forced:
             forced = True
             why = f"time budget of {max_seconds:.0f}s" if out_of_time else "step or context budget"
-            log(f"{tag}[step {step}] {why} exhausted; forcing {terminal.name}")
+            detail(f"{tag}[step {step}] {why} exhausted; forcing {terminal.name}")
             messages.append({"role": "user", "content": budget_exhausted(terminal.name)})
         if forced:
             # Some providers answer a named tool_choice with an empty message; after two such misses fall
@@ -163,36 +169,36 @@ async def run_agent(
             tool_choice = {"type": "function", "function": {"name": terminal.name}} if forced_misses < 2 else "required"
 
         approx_tokens = sum(len(str(m.get("content") or "")) for m in messages) // 4
-        log(f"{tag}[step {step}] waiting for {llm.models[0]} ({len(messages)} messages, ~{approx_tokens:,} tokens)")
+        detail(f"{tag}[step {step}] waiting for {llm.models[0]} ({len(messages)} messages, ~{approx_tokens:,} tokens)")
         t_call = time.monotonic()
         try:
-            result = await _chat_with_heartbeat(llm, messages, tools, tool_choice, log, tag, step)
+            result = await _chat_with_heartbeat(llm, messages, tools, tool_choice, detail, tag, step)
         except ContextLengthError as exc:
             compactions += 1
             # First elide older tool results and retry; then everything and force submission; then give up.
             elided = compact_history(messages, keep_recent=4) if compactions == 1 else 0
             if elided:
                 transcript.append({"kind": "compaction", "step": step, "elided": elided, "error": str(exc)[:300]})
-                log(f"{tag}[step {step}] context window exceeded; elided {elided} older tool result(s) and retrying")
+                detail(f"{tag}[step {step}] context window exceeded; elided {elided} older tool result(s) and retrying")
                 continue
             elided = compact_history(messages, keep_recent=0)
             if elided:
                 transcript.append({"kind": "compaction", "step": step, "elided": elided, "error": str(exc)[:300]})
                 forced = True
-                log(f"{tag}[step {step}] context still too large; elided all tool results, forcing submission")
+                detail(f"{tag}[step {step}] context still too large; elided all tool results, forcing submission")
                 continue
             errors.append(f"context window exceeded and nothing left to compact: {str(exc)[:300]}")
-            log(f"{tag}[step {step}] {errors[-1]}")
+            detail(f"{tag}[step {step}] {errors[-1]}")
             return done(None, step)
         except OpenRouterError as exc:
             errors.append(f"model request failed: {str(exc)[:500]}")
-            log(f"{tag}[step {step}] {errors[-1]}")
+            detail(f"{tag}[step {step}] {errors[-1]}")
             return done(None, step)
         usage.add(result.usage)
         last_prompt_tokens = int((result.usage or {}).get("prompt_tokens") or 0)
         if result.model and result.model not in models:
             models.append(result.model)
-        log(
+        detail(
             f"{tag}[step {step}] {result.model or llm.models[0]} answered in {time.monotonic() - t_call:.1f}s "
             f"({len(result.tool_calls)} tool call(s), {last_prompt_tokens:,} prompt tokens)"
         )
@@ -212,7 +218,8 @@ async def run_agent(
             nudges += 1
             if forced:
                 forced_misses += 1
-            log(f"{tag}[step {step}] no tool call{' despite forced tool_choice' if forced else ''}; nudging ({nudges})")
+            despite = " despite forced tool_choice" if forced else ""
+            detail(f"{tag}[step {step}] no tool call{despite}; nudging ({nudges})")
             if nudges > 2:
                 forced = True
             messages.append(
@@ -243,10 +250,10 @@ async def run_agent(
                         }
                     )
                     if output is not None and not errs:
-                        log(f"{tag}[step {step}] {terminal.describe(output)}")
+                        detail(f"{tag}[step {step}] {terminal.describe(output)}")
                         return done(output, step)
                     rejections += 1
-                    log(f"{tag}[step {step}] submission rejected: {errs}")
+                    detail(f"{tag}[step {step}] submission rejected: {errs}")
                     if rejections > max_rejections:
                         errors.extend(errs)
                         return done(None, step)
@@ -258,7 +265,7 @@ async def run_agent(
                     except Exception as exc:  # noqa: BLE001 - report to the model, keep reviewing
                         content = f"ERROR: {type(exc).__name__}: {exc}"
                     took = time.monotonic() - t0
-                    log(f"{tag}[step {step}] {name}({_short(args)}) -> {len(content)} chars in {took:.1f}s")
+                    detail(f"{tag}[step {step}] {name}({_short(args)}) -> {len(content)} chars in {took:.1f}s")
                     transcript.append(
                         {"kind": "tool_call", "step": step, "name": name, "arguments": args, "chars": len(content)}
                     )
@@ -267,9 +274,9 @@ async def run_agent(
                     label_call = f"{tag}[step {step}] still waiting for tool {name}({_short(args)})"
                     content, rec = await _with_heartbeat(
                         bridge.call_with_record(name, args),
-                        lambda waited, msg=label_call: log(f"{msg} ({waited:.0f}s)"),
+                        lambda waited, msg=label_call: detail(f"{msg} ({waited:.0f}s)"),
                     )
-                    log(
+                    detail(
                         f"{tag}[step {step}] {name}({_short(args)}) -> {rec.result_chars} chars"
                         f"{' ERROR' if rec.is_error else ''} in {rec.seconds:.1f}s"
                     )
@@ -353,6 +360,7 @@ async def run_review(
     max_seconds: float = 0,
     extra_tools: list[LocalTool] | None = None,
     log=print,
+    quiet: bool = False,
 ) -> RunResult:
     """The single-pass review: investigate with the tools, then submit_review."""
     res = await run_agent(
@@ -367,6 +375,7 @@ async def run_review(
         max_seconds=max_seconds,
         extra_tools=extra_tools,
         log=log,
+        quiet=quiet,
     )
     return RunResult(
         res.output,

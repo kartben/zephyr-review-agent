@@ -13,6 +13,7 @@ import pytest
 
 from tests.test_agent import GOOD_REVIEW
 from zephyr_reviewer import cli
+from zephyr_reviewer.review.config import ReviewConfig
 
 
 class _Stub(BaseHTTPRequestHandler):
@@ -443,3 +444,44 @@ def test_findings_file_claims_are_shown_to_the_model_and_answered(
         ]
     )
     assert rc == 2 and "cannot read findings file" in capsys.readouterr().err
+
+
+def test_quiet_logs_one_line_per_stage(mini_repo, stub_openrouter, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("ZR_BASE_URL", stub_openrouter)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test")
+    base_args = [
+        "review",
+        "--repo",
+        str(mini_repo["root"]),
+        "--base",
+        mini_repo["base"],
+        "--head",
+        mini_repo["head"],
+        "--dry-run",
+        "--in-process",
+        "--pipeline",
+        "multi-stage",
+        "--specialists",
+        "intent,logic",
+        "--draft-model",
+        "cheap/model",
+        "--output-dir",
+        str(tmp_path / "out"),
+    ]
+    assert cli.main(base_args) == 0
+    loud = capsys.readouterr().err
+    assert "[intent] [step 1] waiting for cheap/model" in loud
+
+    assert cli.main([*base_args, "--quiet"]) == 0
+    quiet = capsys.readouterr().err
+    assert "[step " not in quiet and "waiting for" not in quiet and "answered in" not in quiet
+    lines = quiet.splitlines()
+    assert any(ln.startswith("pipeline: specialists intent, logic on cheap/model") for ln in lines)
+    assert any(ln.startswith("[intent] ") and "concern(s)" in ln and "step(s)" in ln for ln in lines)
+    assert any(ln.startswith("[logic] ") and "concern(s)" in ln for ln in lines)
+    assert any(ln.startswith("[verification] verification: ") for ln in lines)
+    assert any(ln.startswith("[report] report: ") for ln in lines)
+    assert any(ln.startswith("review finished: ") for ln in lines)
+    assert cli.build_parser().parse_args(["review", "-q"]).quiet
+    monkeypatch.setenv("INPUT_QUIET", "true")
+    assert ReviewConfig.from_env().quiet
