@@ -47,6 +47,11 @@ def marker(tag: str) -> str:
     return f"<!-- {tag} -->"
 
 
+def head_marker(tag: str, head_sha: str) -> str:
+    """Hidden record of the commit a summary comment reviewed, so a later run can tell whether the PR moved."""
+    return f"<!-- {tag}:head:{head_sha} -->"
+
+
 def _lang(path: str) -> str:
     base = path.rsplit("/", 1)[-1]
     if base.startswith("Kconfig") or base.endswith("defconfig"):
@@ -122,6 +127,7 @@ def render_comment(
     listed = [f for f in review.findings if f not in inline]
     out = [
         marker(tag),
+        head_marker(tag, pr.head_sha),
         f"## 🤖 {title}",
         "",
         VERDICT_LINE.get(review.verdict, review.verdict),

@@ -195,3 +195,47 @@ def test_post_command_requires_a_way_to_confirm(tmp_path, monkeypatch):
     assert cli.main(["post", "--output-dir", cfg.output_dir]) == 2  # no terminal, no --yes
     os.environ.pop("GITHUB_TOKEN")
     assert cli.main(["post", "--output-dir", cfg.output_dir, "--yes"]) == 2  # no token
+
+
+def test_skip_reviewed_uses_the_summary_comment_and_its_head_marker():
+    from zephyr_reviewer.review.render import head_marker, marker
+
+    class FakeGitHub:
+        def __init__(self, body):
+            self.body = body
+            self.calls = 0
+
+        def find_comment(self, number, mark):
+            self.calls += 1
+            return (
+                {"id": 5, "html_url": "https://github.com/o/r/pull/7#issuecomment-5", "body": self.body}
+                if mark in self.body
+                else None
+            )
+
+    _, pr = _run()
+    same = FakeGitHub(marker("zephyr-reviewer") + "\n" + head_marker("zephyr-reviewer", pr.head_sha) + "\nold review")
+    moved = FakeGitHub(marker("zephyr-reviewer") + "\n" + head_marker("zephyr-reviewer", "0" * 40) + "\nold review")
+    none = FakeGitHub("unrelated comment")
+
+    assert cli._skip_reason(ReviewConfig(), pr, same) is None and same.calls == 0  # never: not even looked up
+    assert cli._skip_reason(ReviewConfig(skip_reviewed="any"), pr, same).startswith("already reviewed (https://")
+    assert cli._skip_reason(ReviewConfig(skip_reviewed="any"), pr, moved).startswith("already reviewed (")
+    assert cli._skip_reason(ReviewConfig(skip_reviewed="any"), pr, none) is None
+    assert cli._skip_reason(ReviewConfig(skip_reviewed="same-head"), pr, same) == (
+        f"already reviewed at this head {pr.head_sha[:12]} (https://github.com/o/r/pull/7#issuecomment-5)"
+    )
+    assert cli._skip_reason(ReviewConfig(skip_reviewed="same-head"), pr, moved) is None  # the PR moved on
+    assert cli._skip_reason(ReviewConfig(skip_reviewed="same-head"), pr, None) is None  # no GitHub, nothing to check
+    assert ReviewConfig(skip_reviewed="sometimes").validate()  # rejected by validation
+    args = cli.build_parser().parse_args(["review", "--skip-reviewed"])
+    assert args.skip_reviewed == "any"
+    assert cli.build_parser().parse_args(["review", "--skip-reviewed", "same-head"]).skip_reviewed == "same-head"
+
+
+def test_summary_comment_records_the_reviewed_head():
+    from zephyr_reviewer.review.render import head_marker, render_comment
+
+    run, pr = _run()
+    body = render_comment(run.review, run, pr, repo="o/r", tag="zephyr-reviewer")
+    assert body.splitlines()[1] == head_marker("zephyr-reviewer", pr.head_sha)

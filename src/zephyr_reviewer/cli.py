@@ -28,7 +28,16 @@ from .review.mcp_client import ToolBridge, stdio_params
 from .review.openrouter import OpenRouter
 from .review.pipeline import hunk_text, run_pipeline
 from .review.prompts import load_profile, opening_message, system_prompt
-from .review.render import inline_comments, preview_inline, render_comment, render_failure, run_details, run_progress
+from .review.render import (
+    head_marker,
+    inline_comments,
+    marker,
+    preview_inline,
+    render_comment,
+    render_failure,
+    run_details,
+    run_progress,
+)
 from .review.stages import run_two_stage
 
 
@@ -84,6 +93,14 @@ def _add_review_args(p: argparse.ArgumentParser) -> None:
     )
     p.add_argument("--no-ci", action="store_true", help="Do not fetch CI results")
     p.add_argument("--no-linked", action="store_true", help="Do not fetch issues and PRs the change refers to")
+    p.add_argument(
+        "--skip-reviewed",
+        nargs="?",
+        const="any",
+        choices=["any", "same-head"],
+        help="Skip a PR this tool already commented on: 'any' earlier review, or only when the review was of the "
+        "same head commit (default when the flag is given without a value: any)",
+    )
     p.add_argument(
         "--findings",
         metavar="FILE",
@@ -175,6 +192,8 @@ def _config(args: argparse.Namespace) -> ReviewConfig:
         cfg.include_discussion = False
     if args.findings:
         cfg.external_findings_path = args.findings
+    if args.skip_reviewed:
+        cfg.skip_reviewed = args.skip_reviewed
     if args.show_details:
         cfg.show_run_details = True
     if args.post_details:
@@ -264,7 +283,7 @@ def _resolve_pr(cfg: ReviewConfig) -> tuple[PullRequest, GitHub | None]:
     return pr, gh
 
 
-def _skip_reason(cfg: ReviewConfig, pr: PullRequest) -> str | None:
+def _skip_reason(cfg: ReviewConfig, pr: PullRequest, gh: GitHub | None = None) -> str | None:
     if pr.number == 0:
         return None
     if cfg.skip_draft and pr.draft:
@@ -275,6 +294,15 @@ def _skip_reason(cfg: ReviewConfig, pr: PullRequest) -> str | None:
         return f"label {sorted(hit)[0]!r} present"
     if cfg.required_labels and not labels & {lab.lower() for lab in cfg.required_labels}:
         return f"none of the required labels {cfg.required_labels} present"
+    if cfg.skip_reviewed != "never" and gh is not None:
+        existing = gh.find_comment(pr.number, marker(cfg.comment_tag))
+        if existing:
+            url = existing.get("html_url") or f"comment {existing.get('id')}"
+            if cfg.skip_reviewed == "any":
+                return f"already reviewed ({url})"
+            if head_marker(cfg.comment_tag, pr.head_sha) in (existing.get("body") or ""):
+                return f"already reviewed at this head {pr.head_sha[:12]} ({url})"
+            log(f"earlier review found ({url}) but the head moved since; reviewing again")
     return None
 
 
@@ -489,7 +517,7 @@ def cmd_review(args: argparse.Namespace) -> int:
             log(f"::error::{e}")
         return 2
     pr, gh = _resolve_pr(cfg)
-    reason = _skip_reason(cfg, pr)
+    reason = _skip_reason(cfg, pr, gh)
     if reason:
         log(f"skipping review: {reason}")
         pub.write_outputs({"skipped": "true", "verdict": "skipped", "findings_count": 0, "highest_severity": "none"})

@@ -404,6 +404,10 @@ is a workflow to drop into the Zephyr repository or a fork. Points that matter:
   that job.
 - A shallow checkout is enough; the action fetches missing commits itself. Depth only improves
   `file_history` and `blame`.
+- `skip_reviewed: same-head` (or `--skip-reviewed same-head`) skips a PR whose current head this tool
+  already reviewed, so re-running a workflow or sweeping a list of PRs does not pay twice; `any`
+  skips a PR with any earlier review by this tool. The summary comment carries a hidden
+  `<!-- tag:head:sha -->` marker for this. The default, `never`, reviews again and updates the comment.
 - The example gates on an `ai-review` label so cost is opt-in. Remove `required_labels` to review
   everything.
 - `fail_on_severity` turns the step into a gate. Leave it at `none` until the false-positive rate
