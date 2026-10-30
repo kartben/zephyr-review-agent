@@ -417,3 +417,47 @@ async def test_forced_submission_gets_grace_steps_and_falls_back_to_required(min
     never = ScriptedOpenRouter([_completion({"content": ""}) for _ in range(10)])
     run, _, _ = await _run(mini_repo, never, max_steps=2)
     assert run.review is None and "within 2 steps (+3 forced)" in run.errors[0]
+
+
+async def test_tool_calls_in_one_step_run_concurrently_and_answer_in_order(mini_repo):
+    import asyncio
+    import time
+
+    from zephyr_reviewer.review.agent import LocalTool
+
+    async def slow(args):
+        await asyncio.sleep(0.3)
+        return f"answer for {args['n']}"
+
+    tool = LocalTool(
+        {
+            "type": "function",
+            "function": {"name": "slow", "parameters": {"type": "object", "properties": {"n": {"type": "integer"}}}},
+        },
+        slow,
+    )
+    script = ScriptedOpenRouter(
+        [
+            _completion(
+                {
+                    "content": "",
+                    "tool_calls": [
+                        _tool_call("c1", "slow", {"n": 1}),
+                        _tool_call("c2", "read_file", {"path": "drivers/i2c/i2c_foo.c"}),
+                        _tool_call("c3", "slow", {"n": 3}),
+                        _tool_call("c4", "nope", {}),
+                    ],
+                }
+            ),
+            _completion({"content": "", "tool_calls": [_tool_call("c5", "submit_review", GOOD_REVIEW)]}),
+        ]
+    )
+    t0 = time.monotonic()
+    run, _, _ = await _run(mini_repo, script, extra_tools=[tool])
+    assert run.review is not None and time.monotonic() - t0 < 0.55  # the two 0.3s lookups overlapped
+    answers = [m for m in script.requests[1]["messages"] if m["role"] == "tool"]
+    assert [m["tool_call_id"] for m in answers] == ["c1", "c2", "c3", "c4"]
+    assert answers[0]["content"] == "answer for 1" and answers[2]["content"] == "answer for 3"
+    assert "k_sem_take" in answers[1]["content"] and answers[3]["content"].startswith("ERROR: unknown tool")
+    recorded = [t for t in run.transcript if t.get("kind") == "tool_call" and not t.get("terminal")]
+    assert [t["name"] for t in recorded].count("slow") == 2 and all(t["seconds"] >= 0 for t in recorded)

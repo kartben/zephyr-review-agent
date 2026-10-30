@@ -485,3 +485,13 @@ def test_quiet_logs_one_line_per_stage(mini_repo, stub_openrouter, tmp_path, mon
     assert cli.build_parser().parse_args(["review", "-q"]).quiet
     monkeypatch.setenv("INPUT_QUIET", "true")
     assert ReviewConfig.from_env().quiet
+
+
+def test_run_async_widens_the_thread_pool():
+    import asyncio
+
+    async def workers():
+        return asyncio.get_running_loop()._default_executor._max_workers
+
+    assert cli.run_async(workers()) == cli.WORKER_THREADS == 64
+    assert cli.run_async(workers(), threads=8) == 8

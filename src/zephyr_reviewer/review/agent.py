@@ -151,6 +151,53 @@ async def run_agent(
             log(f"{tag}{what} ({step} step(s), {seconds:.0f}s{', forced' if forced else ''})")
         return AgentResult(output, step, usage, models, forced, errors, transcript, seconds, tool_results)
 
+    async def lookup(step: int, name: str, args: dict[str, Any]) -> str:
+        """Answer one non-terminal tool call: a local tool or a bridge lookup, recorded in the transcript."""
+        if name in local:
+            t0 = time.monotonic()
+            try:
+                content = await local[name].handler(args)
+            except Exception as exc:  # noqa: BLE001 - report to the model, keep reviewing
+                content = f"ERROR: {type(exc).__name__}: {exc}"
+            took = time.monotonic() - t0
+            detail(f"{tag}[step {step}] {name}({_short(args)}) -> {len(content)} chars in {took:.1f}s")
+            transcript.append(
+                {
+                    "kind": "tool_call",
+                    "step": step,
+                    "name": name,
+                    "arguments": args,
+                    "chars": len(content),
+                    "seconds": took,
+                }
+            )
+            tool_results.append({"name": name, "arguments": args, "content": content})
+            return content
+        assert bridge is not None
+        label_call = f"{tag}[step {step}] still waiting for tool {name}({_short(args)})"
+        content, rec = await _with_heartbeat(
+            bridge.call_with_record(name, args),
+            lambda waited, msg=label_call: detail(f"{msg} ({waited:.0f}s)"),
+        )
+        detail(
+            f"{tag}[step {step}] {name}({_short(args)}) -> {rec.result_chars} chars"
+            f"{' ERROR' if rec.is_error else ''} in {rec.seconds:.1f}s"
+        )
+        transcript.append(
+            {
+                "kind": "tool_call",
+                "step": step,
+                "name": name,
+                "arguments": args,
+                "chars": rec.result_chars,
+                "error": rec.is_error,
+                "seconds": rec.seconds,
+            }
+        )
+        if not rec.is_error:
+            tool_results.append({"name": name, "arguments": args, "content": content})
+        return content
+
     # Once the budget is out the model is forced to submit; GRACE_STEPS more turns allow a rejected or
     # malformed forced submission to be retried instead of losing the whole run's work.
     for step in range(1, max_steps + GRACE_STEPS + 1):
@@ -227,75 +274,48 @@ async def run_agent(
             )
             continue
 
+        # Parse every call first so a submission is judged before any lookups run; then run the lookups
+        # concurrently (models often ask for several files at once) and answer them in the model's order.
+        parsed: list[tuple[dict[str, Any], str, dict[str, Any] | None, str]] = []
         for tc in result.tool_calls:
             fn = tc.get("function") or {}
             name = fn.get("name", "")
             raw_args = fn.get("arguments") or "{}"
             try:
                 args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+                content = ""
             except json.JSONDecodeError as exc:
                 args = None
                 content = f"ERROR: arguments were not valid JSON ({exc}). Call the tool again with a JSON object."
-            if args is not None:
-                if name == terminal.name:
-                    output, errs = terminal.parse(args)
-                    transcript.append(
-                        {
-                            "kind": "tool_call",
-                            "step": step,
-                            "name": name,
-                            "terminal": True,
-                            "ok": not errs,
-                            "errors": errs,
-                        }
-                    )
-                    if output is not None and not errs:
-                        detail(f"{tag}[step {step}] {terminal.describe(output)}")
-                        return done(output, step)
-                    rejections += 1
-                    detail(f"{tag}[step {step}] submission rejected: {errs}")
-                    if rejections > max_rejections:
-                        errors.extend(errs)
-                        return done(None, step)
-                    content = rejection_message(errs, terminal.name)
-                elif name in local:
-                    t0 = time.monotonic()
-                    try:
-                        content = await local[name].handler(args)
-                    except Exception as exc:  # noqa: BLE001 - report to the model, keep reviewing
-                        content = f"ERROR: {type(exc).__name__}: {exc}"
-                    took = time.monotonic() - t0
-                    detail(f"{tag}[step {step}] {name}({_short(args)}) -> {len(content)} chars in {took:.1f}s")
-                    transcript.append(
-                        {"kind": "tool_call", "step": step, "name": name, "arguments": args, "chars": len(content)}
-                    )
-                    tool_results.append({"name": name, "arguments": args, "content": content})
-                elif bridge is not None and name in bridge_names:
-                    label_call = f"{tag}[step {step}] still waiting for tool {name}({_short(args)})"
-                    content, rec = await _with_heartbeat(
-                        bridge.call_with_record(name, args),
-                        lambda waited, msg=label_call: detail(f"{msg} ({waited:.0f}s)"),
-                    )
-                    detail(
-                        f"{tag}[step {step}] {name}({_short(args)}) -> {rec.result_chars} chars"
-                        f"{' ERROR' if rec.is_error else ''} in {rec.seconds:.1f}s"
-                    )
-                    transcript.append(
-                        {
-                            "kind": "tool_call",
-                            "step": step,
-                            "name": name,
-                            "arguments": args,
-                            "chars": rec.result_chars,
-                            "error": rec.is_error,
-                        }
-                    )
-                    if not rec.is_error:
-                        tool_results.append({"name": name, "arguments": args, "content": content})
-                else:
-                    available = ", ".join(sorted(bridge_names | set(local)))
-                    content = f"ERROR: unknown tool {name!r}. Available: {available}, {terminal.name}."
-            messages.append({"role": "tool", "tool_call_id": tc.get("id", ""), "name": name, "content": content})
+            parsed.append((tc, name, args, content))
+
+        answers: dict[int, str] = {}
+        for i, (_tc, name, args, content) in enumerate(parsed):
+            if args is None:
+                answers[i] = content
+            elif name == terminal.name:
+                output, errs = terminal.parse(args)
+                transcript.append(
+                    {"kind": "tool_call", "step": step, "name": name, "terminal": True, "ok": not errs, "errors": errs}
+                )
+                if output is not None and not errs:
+                    detail(f"{tag}[step {step}] {terminal.describe(output)}")
+                    return done(output, step)
+                rejections += 1
+                detail(f"{tag}[step {step}] submission rejected: {errs}")
+                if rejections > max_rejections:
+                    errors.extend(errs)
+                    return done(None, step)
+                answers[i] = rejection_message(errs, terminal.name)
+            elif name not in local and not (bridge is not None and name in bridge_names):
+                available = ", ".join(sorted(bridge_names | set(local)))
+                answers[i] = f"ERROR: unknown tool {name!r}. Available: {available}, {terminal.name}."
+
+        pending = [i for i in range(len(parsed)) if i not in answers]
+        results = await asyncio.gather(*(lookup(step, parsed[i][1], parsed[i][2] or {}) for i in pending))
+        answers.update(zip(pending, results, strict=True))
+        for i, (tc, name, _args, _content) in enumerate(parsed):
+            messages.append({"role": "tool", "tool_call_id": tc.get("id", ""), "name": name, "content": answers[i]})
 
     errors.append(f"model did not call {terminal.name} within {max_steps} steps (+{GRACE_STEPS} forced)")
     return done(None, max_steps + GRACE_STEPS)

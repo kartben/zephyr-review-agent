@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 
 from . import mcp_server
@@ -43,6 +44,22 @@ from .review.stages import run_two_stage
 
 def log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
+
+
+# Model calls and in-process tool lookups block a worker thread each. The default pool holds cpu_count + 4 threads
+# (14 on a 10-core machine), so an ensemble of 9 specialists x 2 models already queues behind it.
+WORKER_THREADS = 64
+
+
+def run_async(coro, threads: int = WORKER_THREADS):
+    """asyncio.run with a thread pool wide enough for every stage to have its model call in flight at once."""
+
+    async def main():
+        pool = ThreadPoolExecutor(max_workers=threads, thread_name_prefix="zephyr-reviewer")
+        asyncio.get_running_loop().set_default_executor(pool)
+        return await coro
+
+    return asyncio.run(main())
 
 
 # ---------------------------------------------------------------------------- review
@@ -545,7 +562,7 @@ def cmd_review(args: argparse.Namespace) -> int:
         return 2  # a configuration error, like a bad flag: nothing was reviewed
     try:
         discussion = _load_discussion(cfg, gh, pr)
-        run = asyncio.run(
+        run = run_async(
             _run(
                 cfg,
                 pr,
@@ -760,7 +777,7 @@ def cmd_benchmark_run(args: argparse.Namespace) -> int:
             on_event=log,
         )
     log(f"benchmark: {len(entries)} entr{'y' if len(entries) == 1 else 'ies'} -> {out_dir}")
-    report = asyncio.run(
+    report = run_async(
         run_benchmark(
             cfg,
             args.repo,
@@ -770,7 +787,8 @@ def cmd_benchmark_run(args: argparse.Namespace) -> int:
             concurrency=args.concurrency,
             analyze_only=bool(args.analyze_only),
             log=log,
-        )
+        ),
+        threads=min(256, WORKER_THREADS * max(1, int(args.concurrency or 1))),
     )
     print((out_dir / "summary.md").read_text(encoding="utf-8"))
     det = report["summary"]["detection"]
