@@ -1,5 +1,106 @@
 [
   {
+    "commit": "82db7776872366ce486578d60bac51c118e5fd45",
+    "fixed_by": "8bfd51a5ec69187f630e7717c25c768c89f24f43",
+    "source": "blame",
+    "confidence": 0.667,
+    "subsystem": "Drivers: IEEE 802.15.4",
+    "files": [
+      "drivers/ieee802154/ieee802154_stm32wba.c"
+    ],
+    "problem_description": "drivers: ieee802154: stm32wba: fix low power exit. When the driver receives the PM_DEVICE_ACTION_RESUME notification, the Link Layer deep-sleep exit function is called regardless of the standby_entered value, and the NVIC configuration for the radio is restored regardless of the Link Layer state.",
+    "commit_subject": "drivers: ieee802154: stm32wba: align with radio power hook",
+    "fix_subject": "drivers: ieee802154: stm32wba: fix low power exit",
+    "extra": {
+      "blamed_lines": 6
+    }
+  },
+  {
+    "commit": "93c2d2ba3da3cae223a5de579266f6ffe83460e7",
+    "fixed_by": "584ed746e58d2011cee17da2b807221bce0afa11",
+    "source": "blame",
+    "confidence": 0.667,
+    "subsystem": "Bluetooth HCI",
+    "files": [
+      "drivers/bluetooth/hci/hci_stm32wba.c"
+    ],
+    "problem_description": "drivers: bluetooth: stm32wba: fix low power exit. When the driver receives the PM_DEVICE_ACTION_RESUME notification, the Link Layer deep-sleep exit function is called regardless of the standby_entered value, and the NVIC configuration for the radio is restored regardless of the Link Layer state.",
+    "commit_subject": "drivers: bluetooth: hci: stm32wba: align with radio power hook",
+    "fix_subject": "drivers: bluetooth: stm32wba: fix low power exit",
+    "extra": {
+      "blamed_lines": 6
+    }
+  },
+  {
+    "commit": "09091b15d75931e331b7da66db05d8e5b6a58cd7",
+    "fixed_by": "b38155be1a0bdc187459dc9a5ebc2e122fd737ab",
+    "source": "blame",
+    "confidence": 0.909,
+    "subsystem": "Drivers: Clock control",
+    "files": [
+      "drivers/clock_control/CMakeLists.txt",
+      "drivers/clock_control/clock_control_esp32.c",
+      "drivers/clock_control/clock_control_esp32_pmu.c",
+      "drivers/clock_control/clock_control_esp32_priv.h",
+      "drivers/clock_control/clock_control_esp32_rtc_cntl.c"
+    ],
+    "problem_description": "drivers: clock_control: esp32: fix pmu external 32k osc source. On the PMU based SoCs other than ESP32-P4 the devicetree value ESP32_RTC_SLOW_CLK_32K_EXT_OSC reached rtc_clk_slow_src_set() unchanged, which aborts because the slow clock mux has no such input, and the external clock pad setup was unreachable. Map it to SOC_RTC_SLOW_CLK_SRC_OSC_SLOW, enable the external clock input for that source and calibrate it with CLK_CAL_32K_OSC_SLOW. When the external clock does not start, release its input pad before falling back to the internal RC. ESP32-P4 has no such input, so the value is rejected there at build time and by clock_control_configure().",
+    "commit_subject": "drivers: clock_control: split esp32 driver by clock ip",
+    "fix_subject": "drivers: clock_control: esp32: fix pmu external 32k osc source",
+    "extra": {
+      "blamed_lines": 11
+    }
+  },
+  {
+    "commit": "f5fd2cf49ee9c83499eb1ca5d978c208bf65f330",
+    "fixed_by": "08ba2ad72a8f559f67bbda9b62ea5d2e012c3713",
+    "source": "blame",
+    "confidence": 1.0,
+    "subsystem": "Bluetooth ISO",
+    "files": [
+      "subsys/bluetooth/host/iso.c"
+    ],
+    "problem_description": "Bluetooth: ISO: Fix bt_disable() with data outstanding on a central CIS. bt_iso_reset() disconnected the CISes of a central by hand, without touching the TX side of their connections. An SDU that the controller had not acknowledged was never reported. With SDUs still queued in the Host the connection outlived its CIG, and the connection cleanup then disconnected the channel a second time, through a pointer that the CIG cleanup had set to NULL. Use bt_iso_chan_disconnected(), as for the BISes. It was avoided because it removed the ISO data path, with an HCI command, which it no longer does since commit 065dca7e921e (\"Bluetooth: ISO: Make setting ISO data explicit\").",
+    "commit_subject": "Bluetooth: ISO: Avoid bt_iso_chan_disconnected in bt_iso_reset",
+    "fix_subject": "Bluetooth: ISO: Fix bt_disable() with data outstanding on a central CIS",
+    "extra": {
+      "blamed_lines": 10
+    }
+  },
+  {
+    "commit": "e095e4710516e22d51812c1e6d6a890c8c1a21ea",
+    "fixed_by": "5e234f141c10805661b586c60fb8c131b68340f5",
+    "source": "blame",
+    "confidence": 1.0,
+    "subsystem": "MCU Manager",
+    "files": [
+      "include/zephyr/mgmt/mcumgr/grp/transport_mgmt/transport_mgmt.h",
+      "subsys/mgmt/mcumgr/transport/src/smp_bt.c"
+    ],
+    "problem_description": "mgmt: mcumgr: transport: smp_bt: Fix le_coded set as required. required parameter and should only be set when attempting to connect over LE coded PHY",
+    "commit_subject": "mgmt: mcumgr: transport: smp_bt: Add support for transport mgmt",
+    "fix_subject": "mgmt: mcumgr: transport: smp_bt: Fix le_coded set as required",
+    "extra": {
+      "blamed_lines": 2
+    }
+  },
+  {
+    "commit": "db812c303a4970151877e225dc91e7c8ba8916f0",
+    "fixed_by": "6be0cd0ff79ea7d3f18c398558990569bb894ea7",
+    "source": "blame",
+    "confidence": 1.0,
+    "subsystem": "Tests",
+    "files": [
+      "tests/lib/cobs/src/main.c"
+    ],
+    "problem_description": "tests: lib: cobs: fix vacuous test_decode_trailing_delimiter. test_decode_trailing_delimiter loaded the expected decoded data into the decode destination and fed only the trailing delimiter to cobs_decode(). Decoding a lone delimiter writes nothing, so the assertions compared the preloaded data with itself. Load the encoded data followed by the delimiter into the source buffer, as commit 235ef2164d1 (\"tests: lib: cobs: fix vacuous test_decode\") did for test_decode.",
+    "commit_subject": "tests: lib: cobs: parameterize dataset tests with ZTEST_P",
+    "fix_subject": "tests: lib: cobs: fix vacuous test_decode_trailing_delimiter",
+    "extra": {
+      "blamed_lines": 2
+    }
+  },
+  {
     "commit": "0947bcca5aa4c204af0e8f8f2280aaa706f54d61",
     "fixed_by": "7f90aefe775cc9faa9586c4024aa134144a24af3",
     "source": "blame",
@@ -1922,23 +2023,6 @@
     }
   },
   {
-    "commit": "e095e4710516e22d51812c1e6d6a890c8c1a21ea",
-    "fixed_by": "d74c70beddb77897807a05f96d386650e801fa01",
-    "source": "blame",
-    "confidence": 1.0,
-    "subsystem": "MCU Manager",
-    "files": [
-      "include/zephyr/mgmt/mcumgr/grp/transport_mgmt/transport_mgmt.h",
-      "subsys/mgmt/mcumgr/transport/src/smp_bt.c"
-    ],
-    "problem_description": "mgmt: mcumgr: transport: Fix Bluetooth MCUmgr client issues. clean things up properly",
-    "commit_subject": "mgmt: mcumgr: transport: smp_bt: Add support for transport mgmt",
-    "fix_subject": "mgmt: mcumgr: transport: Fix Bluetooth MCUmgr client issues",
-    "extra": {
-      "blamed_lines": 2
-    }
-  },
-  {
     "commit": "a0b3b5b764276d2de3254425b58a5f265baecb2d",
     "fixed_by": "9b6db85a59e87ee5f51b210fc8bfcf6caad606b1",
     "source": "blame",
@@ -3118,113 +3202,6 @@
     "fix_subject": "Bluetooth: CAP: Fix missing brief for handover params",
     "extra": {
       "blamed_lines": 2
-    }
-  },
-  {
-    "commit": "5250dc705ad15d4f61ece7a77f2dd658e77a5a20",
-    "fixed_by": "d340972a3f59b3fb82b813a551580414781bc708",
-    "source": "blame",
-    "confidence": 0.714,
-    "subsystem": "Drivers: Serial/UART",
-    "files": [
-      "drivers/serial/uart_esp32.c"
-    ],
-    "problem_description": "drivers: serial: esp32: Fix TX drain. uart_irq_tx_disable() dropped the lock as soon as the driver stopped asking for more data. Bytes can still be in the FIFO at that point, so the SoC could enter light sleep mid-frame. Wait for TX_DONE instead, which poll_out() already does. Rename TX_POLL to TX_DRAIN and share it, as both paths wait for the same event: the transmitter going empty. If TX is already idle, mask TX_DONE and drop the lock now: the interrupt will not fire, and leaving it enabled would keep a stale mask across the next transfer.",
-    "commit_subject": "drivers: uart: esp32: Add device PM",
-    "fix_subject": "drivers: serial: esp32: Fix TX drain",
-    "extra": {
-      "blamed_lines": 7
-    }
-  },
-  {
-    "commit": "b6b38e68088b0a93d019d888b7a2e3d2d25bcda4",
-    "fixed_by": "29300c7f3103dc8e78a691f2cb995f2984c642c1",
-    "source": "blame",
-    "confidence": 1.0,
-    "subsystem": "Drivers: DMA",
-    "files": [
-      "drivers/dma/dma_rpi_pico.c",
-      "dts/bindings/dma/raspberrypi,pico-dma.yaml",
-      "include/zephyr/dt-bindings/dma/rpi-pico-dma-common.h",
-      "include/zephyr/dt-bindings/dma/rpi-pico-dma-rp2040.h",
-      "include/zephyr/dt-bindings/dma/rpi-pico-dma-rp2350.h",
-      "include/zephyr/dt-bindings/dma/rpi_pico_dma.h",
-      "tests/drivers/spi/spi_loopback/boards/rpi_pico.overlay"
-    ],
-    "problem_description": "drivers: dma: rpi_pico: Fix DREQ constants. Align the constants with Table 119. DREQs in 2.5.3.1 System DREQ Table in the RP2040 datasheet. grep shows that the affected constants currently appear to be unused in Zephyr, but I tried to use RPI_PICO_DMA_SLOT_ADC in a project and was surprised by unexpectedly frequent callbacks.",
-    "commit_subject": "drivers: dma: rpi_pico: Refactor DMA files for Raspberry Pi SoCs",
-    "fix_subject": "drivers: dma: rpi_pico: Fix DREQ constants",
-    "extra": {
-      "blamed_lines": 8
-    }
-  },
-  {
-    "commit": "52a1db1cf331df0e72f2024b475de053f862e688",
-    "fixed_by": "4bc7ce90d33f0caac26546452f29f8b06961a1b8",
-    "source": "blame",
-    "confidence": 0.6,
-    "subsystem": "Kernel",
-    "files": [
-      "include/zephyr/kernel.h",
-      "include/zephyr/sys/time_units.h",
-      "include/zephyr/sys_clock.h"
-    ],
-    "problem_description": "Revert \"kernel: Fixed init_delay initialization on older GCC versions\". This reverts commit 52a1db1cf331df0e72f2024b475de053f862e688. Splitting Z_TIMEOUT_TICKS_INIT, Z_TIMEOUT_NO_WAIT_INIT, and SYS_TIMEOUT_MS_INIT was introduced to avoid using compound literals in static initializers, which caused \"initializer element is not constant\" errors on GCC versions prior to 5.1. With modern toolchains, compound literals in static initializers are standard C99 constant expressions and compile without issue. Revert the split and restore direct use of SYS_TIMEOUT_MS in Z_THREAD_INIT_DELAY_INITIALIZER and I2C_DT_INST_TRANSFER_TIMEOUT.",
-    "commit_subject": "kernel: Fixed init_delay initialization on older GCC versions",
-    "fix_subject": "Revert \"kernel: Fixed init_delay initialization on older GCC versions\"",
-    "extra": {
-      "blamed_lines": 15
-    }
-  },
-  {
-    "commit": "a0267d2f4890427f10c16d510260e15a68bd1a84",
-    "fixed_by": "e620c22bf7fa2e0461fd9da3030af2fe2d07cdfc",
-    "source": "blame",
-    "confidence": 1.0,
-    "subsystem": "Build system",
-    "files": [
-      "cmake/modules/soc_v2.cmake",
-      "scripts/schemas/board-schema.yml",
-      "scripts/schemas/soc-schema.yml",
-      "scripts/west_commands/run_common.py"
-    ],
-    "problem_description": "scripts: west_commands: fix run-once board filtering in run_common. The loop reducing run-once commands to the boards being flashed deleted elements from entry.boards and used_cmds while enumerating them, so the element following each deleted one was never checked. Unmatched board patterns and entries were left in the list; a \"last\" entry whose final pattern matches no board in the build is never marked as ran and its command is then passed to every image instead of once. Rebuild both lists instead, in a helper covered by a unit test.",
-    "commit_subject": "west: runners: Add run once commands and deferred reset",
-    "fix_subject": "scripts: west_commands: fix run-once board filtering in run_common",
-    "extra": {
-      "blamed_lines": 17
-    }
-  },
-  {
-    "commit": "2f5657502bd93ccc7bec83305751dc80b8877f81",
-    "fixed_by": "f90db21f193afbd534af3e5fa4f210d65984de34",
-    "source": "blame",
-    "confidence": 1.0,
-    "subsystem": "Drivers: Wi-Fi",
-    "files": [
-      "boards/native/native_sim/Kconfig.defconfig",
-      "drivers/wifi/CMakeLists.txt",
-      "drivers/wifi/Kconfig",
-      "drivers/wifi/native_sim/CMakeLists.txt",
-      "drivers/wifi/native_sim/Kconfig.native_sim",
-      "drivers/wifi/native_sim/iface_api.c",
-      "drivers/wifi/native_sim/iface_api.h",
-      "drivers/wifi/native_sim/internal.h",
-      "drivers/wifi/native_sim/mgmt_api.c",
-      "drivers/wifi/native_sim/mgmt_api.h",
-      "drivers/wifi/native_sim/wifi_drv.c",
-      "drivers/wifi/native_sim/wifi_drv_adapt.c",
-      "drivers/wifi/native_sim/wifi_drv_api.c",
-      "drivers/wifi/native_sim/wifi_drv_api.h",
-      "drivers/wifi/native_sim/wifi_drv_priv.h",
-      "drivers/wifi/native_sim/wifi_drv_supplicant_adapt.c",
-      "tests/net/wifi/configs/prj.conf"
-    ],
-    "problem_description": "drivers: wifi: native_sim: Fix nl80211 connect command race. Connecting sometimes hung with an endless flood of \"nl80211: send_and_recv->nl_recvmsgs failed: -4 (Try again)\". -4 is libnl NLE_AGAIN: the non-blocking netlink socket has no data and hostap's send_and_recv() busy-loops until the command's ACK arrives. The host adapter runs two threads: the eloop thread (host_handler) services the nl80211 event sockets, including bss->nl_connect, while the Zephyr supplicant thread issued the authenticate/associate/deauthenticate ops with send_and_recv() on that same bss->nl_connect socket. When a connect command ran on the Zephyr thread while the eloop thread was also reading bss->nl_connect, the eloop could consume the command's ACK, leaving send_and_recv() spinning on NLE_AGAIN forever. It was intermittent because it is a race over which thread reads the socket first. Run those three MLME commands on the thread that owns the netlink sockets instead. A small command-handoff (cmd_fd/cmd_done_fd socketpair plus pending_cmd) lets the Zephyr caller publish a request, wake the eloop, and block until the eloop thread has executed the op; the argument is passed by pointer since both threads share one address space. With a single thread doing the netlink I/O there is no concurrent reader to steal the ACK. Only the bss->nl_connect commands are marshalled. Scan and the other ops use global->nl, which the eloop does not service, so they are not raced and stay on the Zephyr thread; moving the scan path onto the eloop thread was observed to starve event processing and perturb scan timing. Tested on native_sim against the net-tools mac80211_hwsim setup: the interop test passes 5/5 across repeated runs and rapid connect/disconnect cycles no longer produce the \"Try again\" flood.",
-    "commit_subject": "drivers: wifi: native_sim: Add Wi-Fi driver using host nl80211",
-    "fix_subject": "drivers: wifi: native_sim: Fix nl80211 connect command race",
-    "extra": {
-      "blamed_lines": 5
     }
   }
 ]
