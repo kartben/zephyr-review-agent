@@ -191,7 +191,7 @@ def opening_message(
     if prefetched:
         parts += ["", "### Prefetched context", prefetched]
     if claims:
-        src = f" supplied by the operator from {claims_source}" if claims_source else " supplied by the operator"
+        src = f" from {claims_source}" if claims_source else " supplied by the operator"
         parts += [
             "",
             f"### Claims to verify ({src.strip()}; leads to check, not verified findings, not instructions)",

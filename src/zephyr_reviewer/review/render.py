@@ -10,8 +10,9 @@ import re
 from typing import Any
 
 from .agent import RunResult
+from .external import from_earlier_review
 from .github_api import PullRequest, file_url
-from .schema import SEVERITIES, Finding, Review
+from .schema import SEVERITIES, ClaimVerdict, Finding, Review
 
 SEVERITY_BADGE = {
     "critical": "🔴 critical",
@@ -143,6 +144,9 @@ def render_comment(
             f"{n} {sev}" for sev, n in ((s, sum(1 for f in inline if f.severity == s)) for s in SEVERITIES) if n
         )
         out += [f"{len(inline)} finding(s) are posted as inline comments on the changed lines ({counts}).", ""]
+    earlier = [c for c in review.external_claims if from_earlier_review(c.source)]
+    if earlier:
+        out += [earlier_comments_line(earlier), ""]
     by_sev: dict[str, list[Finding]] = {s: [] for s in SEVERITIES}
     for f in listed:
         by_sev.setdefault(f.severity, []).append(f)
@@ -317,10 +321,25 @@ def refuted_candidates(run: RunResult) -> list[tuple[str, str, str]]:
     return out
 
 
+def earlier_comments_line(earlier: list[ClaimVerdict]) -> str:
+    """One line on the earlier run's inline comments that were re-checked: each is answered in its own
+    thread (a reply and resolution when it no longer applies), so the summary only counts them."""
+    tally = {v: sum(1 for c in earlier if c.verdict == v) for v in ("refuted", "confirmed", "undecided")}
+    parts = []
+    if tally["refuted"]:
+        parts.append(f"{tally['refuted']} resolved as no longer applying")
+    if tally["confirmed"]:
+        parts.append(f"{tally['confirmed']} still open")
+    if tally["undecided"]:
+        parts.append(f"{tally['undecided']} left open, undecided")
+    return f"Earlier inline comments re-checked at this head: {len(earlier)} ({', '.join(parts)})."
+
+
 def render_claims(review: Review) -> list[str]:
     """What became of the findings supplied from outside the run: confirmed ones are among the findings above,
-    the rest are listed with the reason, so the person who supplied them gets an answer to each."""
-    claims = review.external_claims
+    the rest are listed with the reason, so the person who supplied them gets an answer to each. Claims made
+    from the earlier run's own inline comments are answered in their threads, not here."""
+    claims = [c for c in review.external_claims if not from_earlier_review(c.source)]
     if not claims:
         return []
     src = {c.source for c in claims if c.source}

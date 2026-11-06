@@ -70,7 +70,7 @@ def test_bullets_paragraphs_and_json_are_accepted():
 def test_opening_message_carries_claims_as_data_to_verify():
     pr = PullRequest(7, "t", "", "a", "main", "b" * 40, "pr", "h" * 40, "o/r", False)
     text = opening_message(pr, "ov", "diff", "", "o/r", claims="[X1] (a.c:3) a.c:3: leak", claims_source="notes.txt")
-    assert "### Claims to verify (supplied by the operator from notes.txt; leads to check" in text
+    assert "### Claims to verify (from notes.txt; leads to check" in text
     assert "<external_findings>\n[X1] (a.c:3) a.c:3: leak\n</external_findings>" in text
     assert "Every claim needs a verdict." in text
     assert "<external_findings>" not in opening_message(pr, "ov", "diff", "", "o/r")

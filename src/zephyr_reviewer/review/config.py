@@ -102,6 +102,7 @@ class ReviewConfig:
     required_labels: list[str] = field(default_factory=list)
     skip_draft: bool = True
     skip_reviewed: str = "never"  # never | any (our summary comment exists) | same-head (and it reviewed this head)
+    resolve_addressed: bool = True  # on a re-review, resolve the earlier run's inline comments this run refutes
 
     @classmethod
     def from_env(cls) -> ReviewConfig:
@@ -168,6 +169,7 @@ class ReviewConfig:
         cfg.required_labels = _list(_env("required_labels"))
         cfg.skip_draft = _bool(_env("skip_draft"), True)
         cfg.skip_reviewed = _env("skip_reviewed", "never").strip().lower() or "never"
+        cfg.resolve_addressed = _bool(_env("resolve_addressed"), True)
         return cfg
 
     def validate(self) -> list[str]:

@@ -330,6 +330,22 @@ single agent reports a verdict per claim in `external_claims`. The comment ends 
 checked" section answering every claim (confirmed ones are among the findings), `review.json`
 records the verdicts, and `review_map.json` the lineage of each `X*` id.
 
+### Re-reviews after a push
+
+When a pull request this tool already reviewed is reviewed again at a new head, the earlier run's
+inline comments whose threads are still open are re-checked. Each becomes a claim (`X*`, after any
+from `--findings`) with the source "the earlier review of <sha>", verified like the others: the
+code at the new head either still has the problem or it does not. A refuted claim was fixed or no
+longer applies: its thread gets a one-line reply ("No longer applies at <sha>: <reason>") and is
+resolved. A confirmed claim keeps its thread, and the new finding that confirms it is not posted a
+second time. Undecided claims are left alone. Each earlier comment is answered in its own thread,
+never in the summary comment, which only counts them ("Earlier inline comments re-checked at this
+head: 3 (1 resolved as no longer applying, 2 still open)"); the "Claims checked" section is for
+claims from `--findings` only. Nothing happens on a run at the same head, in a dry
+run, or in `ask` mode until the review is posted (`zephyr-reviewer post` resolves from the saved
+`claims.json`). The step's `resolved_count` output says how many threads were resolved; set
+`resolve_addressed: "false"` (or `--no-resolve-addressed`) to leave earlier comments alone.
+
 ### Log verbosity
 
 The log records every model call and tool call by default, prefixed with the stage and step. `--quiet`
@@ -416,6 +432,8 @@ is a workflow to drop into the Zephyr repository or a fork. Points that matter:
   already reviewed, so re-running a workflow or sweeping a list of PRs does not pay twice; `any`
   skips a PR with any earlier review by this tool. The summary comment carries a hidden
   `<!-- tag:head:sha -->` marker for this. The default, `never`, reviews again and updates the comment.
+- A review at a new head re-checks the earlier run's open inline comments and resolves the ones
+  that no longer apply (see "Re-reviews after a push").
 - The example gates on an `ai-review` label so cost is opt-in. Remove `required_labels` to review
   everything.
 - `fail_on_severity` turns the step into a gate. Leave it at `none` until the false-positive rate

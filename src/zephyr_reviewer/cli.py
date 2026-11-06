@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -23,7 +24,8 @@ from .review.ci import CI_FAILURE_LOGS_TOOL, CI_STATUS_TOOL, CIResults
 from .review.config import ReviewConfig
 from .review.discussion import PR_DISCUSSION_TOOL, Discussion, trust_level
 from .review.external import Claim, claims_digest, parse_claims, reconcile
-from .review.github_api import GitHub, PullRequest, pr_number_from_event
+from .review.followup import as_claims, open_findings
+from .review.github_api import GitHub, GitHubError, PullRequest, pr_number_from_event
 from .review.linked import LINKED_ISSUE_TOOL, Linked, load_linked
 from .review.mcp_client import ToolBridge, stdio_params
 from .review.openrouter import OpenRouter
@@ -125,6 +127,12 @@ def _add_review_args(p: argparse.ArgumentParser) -> None:
         "each becomes a claim X* the models confirm or refute",
     )
     p.add_argument(
+        "--no-resolve-addressed",
+        action="store_true",
+        help="On a re-review, leave the earlier review's inline comments alone instead of re-checking them "
+        "and resolving the ones that no longer apply",
+    )
+    p.add_argument(
         "--no-discussion",
         action="store_true",
         help="Ignore existing reviews and comments on the PR so they cannot influence the review (testing)",
@@ -215,6 +223,8 @@ def _config(args: argparse.Namespace) -> ReviewConfig:
         cfg.include_discussion = False
     if args.findings:
         cfg.external_findings_path = args.findings
+    if args.no_resolve_addressed:
+        cfg.resolve_addressed = False
     if args.skip_reviewed:
         cfg.skip_reviewed = args.skip_reviewed
     if args.quiet:
@@ -410,7 +420,7 @@ async def _run(
         prefetched=prefetched,
         linked=linked.digest(cfg.max_linked_chars) if linked else None,
         claims=claims_digest(claims) if claims else None,
-        claims_source=claims[0].source if claims else "",
+        claims_source=", ".join(dict.fromkeys(c.source for c in claims or [] if c.source)),
     )
     extra_tools = [LocalTool(PR_DISCUSSION_TOOL, discussion.tool_handler)] if discussion else []
     if linked:
@@ -537,6 +547,31 @@ def _load_claims(cfg: ReviewConfig) -> list[Claim] | None:
     return claims
 
 
+def _load_followups(cfg: ReviewConfig, gh: GitHub | None, pr: PullRequest, start: int) -> list[Claim]:
+    """The earlier review's open inline comments as claims to re-check, when the head moved since."""
+    if gh is None or not pr.number or not cfg.resolve_addressed:
+        return []
+    existing = gh.find_comment(pr.number, marker(cfg.comment_tag))
+    if not existing:
+        return []
+    body = existing.get("body") or ""
+    if head_marker(cfg.comment_tag, pr.head_sha) in body:
+        return []  # same head: the code did not change, the comments stand
+    m = re.search(rf"<!-- {re.escape(cfg.comment_tag)}:head:([0-9a-f]+) -->", body)
+    try:
+        found = open_findings(gh, pr.number, cfg.comment_tag)
+    except GitHubError as exc:
+        log(f"::warning::cannot list the earlier review's inline comments: {exc}")
+        return []
+    claims = as_claims(found, start, m.group(1) if m else "")
+    if claims:
+        log(
+            f"{len(claims)} open inline comment(s) from the earlier review re-checked as "
+            f"{claims[0].id}..{claims[-1].id}; one this run refutes is resolved"
+        )
+    return claims
+
+
 def cmd_review(args: argparse.Namespace) -> int:
     cfg = _config(args)
     errors = cfg.validate()
@@ -560,6 +595,7 @@ def cmd_review(args: argparse.Namespace) -> int:
     claims = _load_claims(cfg)
     if claims is None:
         return 2  # a configuration error, like a bad flag: nothing was reviewed
+    claims = claims + _load_followups(cfg, gh, pr, len(claims) + 1)
     try:
         discussion = _load_discussion(cfg, gh, pr)
         run = run_async(
@@ -610,10 +646,10 @@ def cmd_review(args: argparse.Namespace) -> int:
 
         inline = []
     body = render(bool(inline))
-    out_dir = pub.save_artifacts(cfg.output_dir, run, body, pr, cfg, inline)
+    out_dir = pub.save_artifacts(cfg.output_dir, run, body, pr, cfg, inline, claims)
     log(f"artifacts in {out_dir}" + (f" ({len(inline)} inline comment(s))" if inline else ""))
     confirm = _interactive_confirm(cfg.output_dir, pr) if cfg.publish == "ask" and _has_terminal() else None
-    outputs = pub.publish(cfg, gh, pr, run, render, log=log, confirm=confirm)
+    outputs = pub.publish(cfg, gh, pr, run, render, log=log, confirm=confirm, claims=claims)
     pub.write_outputs(outputs)
     # Models, tokens and cost appear nowhere by default; review.json keeps them for whoever opens the artifact.
     # show_run_details puts them in the local log for testing; only post_run_details lets them reach GitHub

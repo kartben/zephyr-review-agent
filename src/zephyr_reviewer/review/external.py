@@ -19,6 +19,14 @@ from .schema import ClaimVerdict, Review
 
 MAX_CLAIMS = 20
 MAX_CLAIM_CHARS = 2_000
+EARLIER_REVIEW = "the earlier review"  # source of claims made from this tool's own earlier inline comments
+
+
+def from_earlier_review(source: str) -> bool:
+    """Whether a claim (or its verdict) came from an earlier inline comment of ours, which is answered in
+    its own thread rather than in the summary comment."""
+    return (source or "").startswith(EARLIER_REVIEW)
+
 
 _LOCATION = re.compile(
     r"(?P<file>(?:[\w.+-]+/)*[\w.+-]+\.(?:[ch]|S|cpp|hpp|rst|ya?ml|txt|cmake|dtsi?|overlay|conf|py|md)"

@@ -236,6 +236,18 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
         resp = self._request("POST", f"/repos/{self.repo}/pulls/{number}/reviews", json_body=payload)
         return resp.json().get("html_url", "")
 
+    def reply_to_review_comment(self, number: int, comment_id: int, body: str) -> str:
+        resp = self._request(
+            "POST", f"/repos/{self.repo}/pulls/{number}/comments/{comment_id}/replies", json_body={"body": body}
+        )
+        return resp.json().get("html_url", "")
+
+    def resolve_thread(self, thread_id: str) -> bool:
+        """Mark a review thread resolved (GraphQL node id from review_threads)."""
+        mutation = "mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }"
+        data = self.graphql(mutation, {"id": thread_id})
+        return bool(((data.get("resolveReviewThread") or {}).get("thread") or {}).get("isResolved"))
+
 
 def file_url(repo: str, sha: str, path: str, line: int | None = None, api_url: str = "https://api.github.com") -> str:
     host = "https://github.com" if "api.github.com" in api_url else api_url.split("/api")[0]

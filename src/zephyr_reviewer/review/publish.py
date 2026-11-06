@@ -14,8 +14,11 @@ from typing import Any
 
 from .agent import RunResult
 from .config import SEVERITY_RANK, ReviewConfig
+from .external import Claim
+from .followup import pending_resolutions, reposted_markers, resolve_addressed
 from .github_api import GitHub, GitHubError, PullRequest
 from .render import inline_comments, inline_marker, marker, posted_title
+from .schema import Review
 
 # Called in "ask" mode with the rendered comment and the inline comments; returns
 # (post it?, body to post, inline comments to post). The CLI provides an interactive one; a job gets none.
@@ -47,12 +50,16 @@ def save_artifacts(
     pr: PullRequest,
     cfg: ReviewConfig,
     inline: list[dict[str, Any]] | None = None,
+    claims: list[Claim] | None = None,
 ) -> Path:
-    """comment.md is the top-level comment as it would be posted; inline_comments.json the anchored findings."""
+    """comment.md is the top-level comment as it would be posted; inline_comments.json the anchored findings;
+    claims.json the claims the run verified (with the threads of the earlier comments among them)."""
     d = Path(out_dir)
     d.mkdir(parents=True, exist_ok=True)
     (d / "comment.md").write_text(body, encoding="utf-8")
     (d / "inline_comments.json").write_text(json.dumps(inline or [], indent=2), encoding="utf-8")
+    if claims:
+        (d / "claims.json").write_text(json.dumps([dataclasses.asdict(c) for c in claims], indent=2), encoding="utf-8")
     record = {
         "pr": pr.number,
         "head_sha": pr.head_sha,
@@ -97,7 +104,10 @@ def publish(
     render: RenderFn,
     log=print,
     confirm: ConfirmFn | None = None,
+    claims: list[Claim] | None = None,
 ) -> dict[str, Any]:
+    """`claims` are what the run verified; those carrying the thread of an earlier inline comment decide
+    what happens to that thread: refuted ones are resolved after posting, confirmed ones are not re-posted."""
     outputs: dict[str, Any] = {
         "verdict": run.review.verdict if run.review else "error",
         "findings_count": len(run.review.findings) if run.review else 0,
@@ -106,10 +116,13 @@ def publish(
         "comment_url": "",
         "review_url": "",
         "inline_count": 0,
+        "resolved_count": 0,
         "posted": "false",
         "skipped": "false",
     }
     inline = inline_comments(run.review, cfg.comment_tag) if (cfg.post_inline and run.review is not None) else []
+    if inline and claims and run.review is not None:
+        inline = _without_still_open(inline, run.review, claims, cfg.comment_tag, log)
     body = render(bool(inline))
     if gh is None or not pr.number:
         log("no pull request: nothing to post")
@@ -124,13 +137,31 @@ def publish(
                 f"with: zephyr-reviewer post --output-dir {cfg.output_dir} --repository {cfg.repo_slug}"
             )
             return outputs
+        pending = pending_resolutions(run.review, claims) if (claims and run.review is not None) else []
+        if pending:
+            log(f"{len(pending)} earlier inline comment(s) will be resolved as no longer applying if you post")
         ok, body, inline = confirm(body, inline)
         if not ok:
             log("not posted")
             return outputs
     posted = _post(gh, pr.number, pr.head_sha, body, inline, cfg.post_comment, cfg.comment_tag, log, render)
     outputs.update(posted)
+    if claims and run.review is not None:
+        outputs["resolved_count"] = len(resolve_addressed(gh, pr.number, pr.head_sha, run.review, claims, log))
     return outputs
+
+
+def _without_still_open(
+    inline: list[dict[str, Any]], review: Review, claims: list[Claim], tag: str, log
+) -> list[dict[str, Any]]:
+    """Drop the inline comments that restate an earlier comment the run confirmed: its thread is still open."""
+    skip = reposted_markers(review, claims, tag)
+    if not skip:
+        return inline
+    kept = [c for c in inline if not any(m in c["body"] for m in skip)]
+    if len(kept) < len(inline):
+        log(f"{len(inline) - len(kept)} finding(s) confirm earlier inline comment(s) still open; not posted again")
+    return kept
 
 
 def _post(
@@ -247,4 +278,11 @@ def post_saved(
         if not ok:
             log("not posted")
             return {"posted": "false"}
-    return _post(gh, number, record.get("head_sha") or "", body, comments, True, tag, log)
+    head = record.get("head_sha") or ""
+    out = _post(gh, number, head, body, comments, True, tag, log)
+    claims_path = Path(output_dir) / "claims.json"
+    if claims_path.exists() and record.get("review"):
+        claims = [Claim(**c) for c in json.loads(claims_path.read_text(encoding="utf-8"))]
+        review = Review.from_dict(record["review"])
+        out["resolved_count"] = len(resolve_addressed(gh, number, head, review, claims, log))
+    return out

@@ -209,6 +209,14 @@ inputs:
       `never` (default) reviews every time and updates the earlier comment.
     required: false
     default: "never"
+  resolve_addressed:
+    description: >-
+      When a pull request this tool reviewed earlier is reviewed again at a new head, its earlier
+      inline comments whose threads are still open are re-checked as claims. One the run refutes
+      gets a reply and its thread is resolved; a confirmed one keeps its thread and is not posted
+      again. `false` leaves earlier comments alone.
+    required: false
+    default: "true"
 
   post_comment:
     description: "Post (and update in place) the summary comment."
@@ -283,6 +291,9 @@ outputs:
     value: ${{ steps.review.outputs.comment_url }}
   review_url:
     value: ${{ steps.review.outputs.review_url }}
+  resolved_count:
+    description: "Earlier inline comments resolved because this run found they no longer apply."
+    value: ${{ steps.review.outputs.resolved_count }}
   inline_count:
     description: "Number of inline review comments posted."
     value: ${{ steps.review.outputs.inline_count }}
@@ -351,6 +362,7 @@ runs:
         INPUT_REQUIRED_LABELS: ${{ inputs.required_labels }}
         INPUT_SKIP_DRAFT: ${{ inputs.skip_draft }}
         INPUT_SKIP_REVIEWED: ${{ inputs.skip_reviewed }}
+        INPUT_RESOLVE_ADDRESSED: ${{ inputs.resolve_addressed }}
         INPUT_POST_COMMENT: ${{ inputs.post_comment }}
         INPUT_POST_INLINE_COMMENTS: ${{ inputs.post_inline_comments }}
         INPUT_QUIET: ${{ inputs.quiet }}
