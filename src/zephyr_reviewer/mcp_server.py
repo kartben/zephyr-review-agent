@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 from typing import Any, TypedDict
 
@@ -19,6 +20,10 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, TextContent
 
 from .intel import SourceIntel
+from .intel.repo import git_out, merge_base, upstream_branch
+from .review.config import ReviewConfig
+from .review.github_api import PullRequest
+from .review.prompts import load_profile, local_review, opening_message
 
 
 # Typed outputs: these tools return human-readable text for the model *and* structured content for
@@ -238,10 +243,39 @@ def build_server(intel: SourceIntel, name: str = "zephyr-source-intel") -> MCPSe
     return srv
 
 
+def add_review_prompt(srv: MCPServer, intel: SourceIntel, repo: str, head: str, base: str) -> None:
+    """``serve --local``: a `review` prompt that hands the client's model what the CI reviewer starts from."""
+
+    def build() -> str:
+        branch = (head == "HEAD" and git_out(repo, "symbolic-ref", "-q", "--short", "HEAD")) or head
+        pr = PullRequest(0, branch, "", "", base, intel.base_sha, branch, intel.head.sha, "", False)
+        cfg = ReviewConfig()
+        diff = intel.diff_text if len(intel.diff_text) <= cfg.inline_diff_chars else None
+        opening = opening_message(pr, intel.overview(), diff, "", "", prefetched=intel.prefetch(cfg.prefetch_chars))
+        return local_review(load_profile(cfg.profile), opening, base)
+
+    @srv.prompt(name="review", title="Review this branch as a Zephyr pull request")
+    async def review() -> str:
+        """Review the checked-out branch as Zephyr maintainers would review its pull request."""
+        return await asyncio.to_thread(build)
+
+
 def add_server_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--repo", default=".", help="Path to the Zephyr checkout (default: cwd)")
+    p.add_argument(
+        "--repo",
+        default=os.environ.get("CLAUDE_PROJECT_DIR") or ".",
+        help="Path to the Zephyr checkout (default: $CLAUDE_PROJECT_DIR, else cwd)",
+    )
     p.add_argument("--head", default="HEAD", help="Commit under review (default: HEAD)")
-    p.add_argument("--base", required=True, help="Base commit or ref, e.g. upstream/main or a merge-base SHA")
+    p.add_argument(
+        "--base", help="Base commit or ref, e.g. upstream/main or a merge-base SHA (required without --local)"
+    )
+    p.add_argument(
+        "--local",
+        action="store_true",
+        help="Review a local branch as its pull request: diff from its merge base with --base (default: the "
+        "upstream branch) and add a `review` prompt",
+    )
     p.add_argument("--max-chars", type=int, default=24_000, help="Per-result size cap")
     p.add_argument("--transport", choices=["stdio", "streamable-http"], default="stdio")
     p.add_argument("--host", default="127.0.0.1")
@@ -258,8 +292,19 @@ def _only_broken_pipes(exc: BaseException) -> bool:
 
 
 def serve(args: argparse.Namespace) -> int:
-    intel = SourceIntel(args.repo, args.head, args.base, max_chars=args.max_chars)
+    base = args.base or (upstream_branch(args.repo) if args.local else None)
+    if not base:
+        raise SystemExit(
+            "serve --local: no upstream branch found (looked for the remote pointing at zephyrproject-rtos/zephyr, "
+            "then upstream and origin); pass --base"
+            if args.local
+            else "serve: --base is required without --local"
+        )
+    start = merge_base(args.repo, args.head, base) if args.local else base
+    intel = SourceIntel(args.repo, args.head, start, max_chars=args.max_chars)
     srv = build_server(intel)
+    if args.local:
+        add_review_prompt(srv, intel, args.repo, args.head, base)
     try:
         if args.transport == "stdio":
             srv.run(transport="stdio")

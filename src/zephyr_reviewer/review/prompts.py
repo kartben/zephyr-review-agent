@@ -225,6 +225,31 @@ platform coverage that matches what changed.
 - At most 15 entries, most important first. Explain in `reason` what each run verifies.\
 """
 
+LOCAL_REVIEW = """\
+
+---
+
+# This session: a local branch, before its pull request exists
+
+You are in the developer's own client, on their checkout. The change above is the branch's commits since
+its merge base with `{base}`, the diff its pull request will show; uncommitted edits are not part of it.
+There is no discussion, CI result or linked issue yet.
+
+- There is no `{submit}` tool here: write the review in your reply. First a one-line verdict (approve,
+  comment or request changes) with the key problem, then the findings, most severe first, each under a
+  `### <severity>: <title>` heading with `path:line`, the problem, trigger, impact, recommendation and
+  suggested code as described above, and a short `Checked:` line for the evidence. Then commit-message,
+  test and documentation problems, only where something is wrong.
+- Review, do not fix: do not edit files, commit or build. The developer decides what to change.\
+"""
+
+
+def local_review(profile_text: str, opening: str, base_ref: str, language: str = "English") -> str:
+    """The review prompt for a developer's own MCP client: what the CI reviewer starts from, with the review
+    written in the reply instead of submitted."""
+    head = system_prompt(profile_text, language, discussion=False)
+    return f"{head}\n\n---\n\n{opening}\n{LOCAL_REVIEW.format(base=base_ref, submit=SUBMIT_TOOL_NAME)}"
+
 
 def nudge(tool: str = SUBMIT_TOOL_NAME) -> str:
     return f"You replied with prose instead of a tool call. Continue with the tools, or call `{tool}` to finish."

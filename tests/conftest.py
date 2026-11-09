@@ -299,3 +299,18 @@ def mini_repo(tmp_path_factory: pytest.TempPathFactory) -> dict:
     head = _git(root, "rev-parse", "HEAD")
     _git(root, "checkout", "-q", "main")
     return {"root": root, "base": base, "head": head}
+
+
+@pytest.fixture
+def local_clone(mini_repo, tmp_path) -> dict:
+    """A developer's clone with the PR branch checked out as ``feature``, after ``origin/main`` gained a commit
+    the branch does not have: a diff from the tip would show that commit reverted."""
+    root = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", str(mini_repo["root"]), str(root)], check=True)
+    _git(root, "checkout", "-q", "--detach", "origin/main")
+    _write(root, "drivers/i2c/i2c_upstream.c", "/* landed upstream after the branch was cut */\n")
+    _git(root, "add", "-A")
+    _git(root, "-c", "user.name=Dev", "-c", "user.email=dev@example.com", "commit", "-q", "-m", "upstream")
+    _git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+    _git(root, "checkout", "-q", "-b", "feature", "origin/pr")
+    return {"root": root, "base": mini_repo["base"]}

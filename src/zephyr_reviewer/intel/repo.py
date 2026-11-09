@@ -18,10 +18,34 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _GREP_LINE = re.compile(r"^(?P<path>.*?):(?P<line>\d+):(?P<text>.*)$")
+_UPSTREAM_URL = re.compile(r"[/:]zephyrproject-rtos/zephyr(?:\.git)?/?$")
 
 
 class GitError(RuntimeError):
     pass
+
+
+def git_out(root: str | Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=False).stdout.strip()
+
+
+def upstream_branch(root: str | Path) -> str | None:
+    """The branch a local branch's pull request would target: the default branch of the remote that points
+    at zephyrproject-rtos/zephyr, whatever it is called, else of ``upstream`` or ``origin``."""
+    lines = (line.split() for line in git_out(root, "remote", "-v").splitlines())
+    remotes = [name for name, url, *_ in lines if _UPSTREAM_URL.search(url)]
+    for remote in dict.fromkeys([*remotes, "upstream", "origin"]):
+        default = git_out(root, "symbolic-ref", "-q", "--short", f"refs/remotes/{remote}/HEAD")
+        for ref in [default] if default else [f"{remote}/main", f"{remote}/master"]:
+            if git_out(root, "rev-parse", "--verify", "-q", f"refs/remotes/{ref}^{{commit}}"):
+                return ref
+    return None
+
+
+def merge_base(root: str | Path, head: str, base: str) -> str:
+    """Where a pull request from ``head`` into ``base`` starts, as GitHub diffs it: commits that landed on
+    ``base`` after the branch was cut are not part of the change. ``base`` itself when there is none."""
+    return git_out(root, "merge-base", head, base).split("\n")[0] or base
 
 
 @dataclass(frozen=True)
