@@ -106,6 +106,39 @@ zephyr-reviewer serve --repo ~/zephyrproject/zephyr --base upstream/main --head 
 zephyr-reviewer serve --repo ~/zephyrproject/zephyr --base upstream/main --transport streamable-http --port 8765
 ```
 
+### Review your branch from your MCP client
+
+`serve --local` reviews the checked-out branch as its pull request. The diff starts at the branch's
+merge base with upstream, as on GitHub, so commits that landed upstream since you branched are left
+out. Upstream is the default branch of the remote pointing at zephyrproject-rtos/zephyr, else of
+`upstream` or `origin`; `--base` overrides it. A `review` prompt gives your client's model the Zephyr
+profile, the false-positive guide, severity calibration, the diff and prefetched context. Your
+client's model writes the review, so no OpenRouter key is needed.
+
+Claude Code, from the Zephyr checkout (add `--scope user` to use it in every project), then type
+`/mcp__zephyr__review`:
+
+```bash
+claude mcp add zephyr -- /path/to/zephyr-review-agent/.venv/bin/zephyr-reviewer serve --local
+```
+
+VS Code (`.vscode/mcp.json`, then `/mcp.zephyr.review` in chat) or Cursor (`.cursor/mcp.json`, with
+`mcpServers` instead of `servers`):
+
+```json
+{
+  "servers": {
+    "zephyr": {
+      "command": "/path/to/zephyr-review-agent/.venv/bin/zephyr-reviewer",
+      "args": ["serve", "--local", "--repo", "${workspaceFolder}"]
+    }
+  }
+}
+```
+
+The server reads the branch when it starts: restart it after new commits or a branch switch (`/mcp`
+in Claude Code). Uncommitted changes are not reviewed.
+
 ## The tools
 
 | Tool | Answers |
